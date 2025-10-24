@@ -1,41 +1,41 @@
 import 'package:flutter/material.dart';
 import 'package:usb_serial/usb_serial.dart';
 import '../services/serial_communication_service.dart';
+import '../providers/serial_service_provider.dart';
+import 'advanced_configuration_screen.dart';
 
-class SerialCommunicationScreen extends StatefulWidget {
-  const SerialCommunicationScreen({super.key});
+class ConfigurationScreen extends StatefulWidget {
+  const ConfigurationScreen({super.key});
 
   @override
-  State<SerialCommunicationScreen> createState() => _SerialCommunicationScreenState();
+  State<ConfigurationScreen> createState() => _ConfigurationScreenState();
 }
 
-class _SerialCommunicationScreenState extends State<SerialCommunicationScreen> {
-  final SerialCommunicationService _serialService = SerialCommunicationService();
-  final TextEditingController _messageController = TextEditingController();
-  final ScrollController _scrollController = ScrollController();
+class _ConfigurationScreenState extends State<ConfigurationScreen> {
+  SerialCommunicationService? _serialService;
   
   List<UsbDevice> _devices = [];
   UsbDevice? _selectedDevice;
-  final List<String> _receivedMessages = [];
   bool _isConnected = false;
-  int _baudRate = 9600;
+  int _baudRate = 115200;
 
   @override
   void initState() {
     super.initState();
-    _setupStreams();
-    _loadDevices();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_serialService == null) {
+      _serialService = SerialServiceProvider.of(context);
+      _setupStreams();
+      _loadDevices();
+    }
   }
 
   void _setupStreams() {
-    _serialService.dataStream.listen((data) {
-      setState(() {
-        _receivedMessages.add('Received: $data');
-      });
-      _scrollToBottom();
-    });
-
-    _serialService.connectionStream.listen((isConnected) {
+    _serialService?.connectionStream.listen((isConnected) {
       setState(() {
         _isConnected = isConnected;
       });
@@ -43,28 +43,17 @@ class _SerialCommunicationScreenState extends State<SerialCommunicationScreen> {
   }
 
   Future<void> _loadDevices() async {
-    final devices = await _serialService.getAvailableDevices();
+    if (_serialService == null) return;
+    final devices = await _serialService!.getAvailableDevices();
     setState(() {
       _devices = devices;
     });
   }
 
-  void _scrollToBottom() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-        );
-      }
-    });
-  }
-
   Future<void> _connectToDevice() async {
-    if (_selectedDevice == null) return;
+    if (_selectedDevice == null || _serialService == null) return;
 
-    final success = await _serialService.connectToDevice(
+    final success = await _serialService!.connectToDevice(
       _selectedDevice!,
       baudRate: _baudRate,
     );
@@ -81,27 +70,11 @@ class _SerialCommunicationScreenState extends State<SerialCommunicationScreen> {
   }
 
   Future<void> _disconnect() async {
-    await _serialService.disconnect();
+    if (_serialService == null) return;
+    await _serialService!.disconnect();
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Disconnected')),
     );
-  }
-
-  Future<void> _sendMessage() async {
-    if (_messageController.text.isEmpty) return;
-
-    final success = await _serialService.sendData(_messageController.text);
-    if (success) {
-      setState(() {
-        _receivedMessages.add('Sent: ${_messageController.text}');
-      });
-      _messageController.clear();
-      _scrollToBottom();
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Failed to send message')),
-      );
-    }
   }
 
   @override
@@ -109,7 +82,7 @@ class _SerialCommunicationScreenState extends State<SerialCommunicationScreen> {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        title: const Text('Serial Communication'),
+        title: const Text('Board Configuration'),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
@@ -156,17 +129,16 @@ class _SerialCommunicationScreenState extends State<SerialCommunicationScreen> {
                         Expanded(
                           child: Text('Baud Rate: $_baudRate'),
                         ),
-                        Slider(
-                          value: _baudRate.toDouble(),
-                          min: 9600,
-                          max: 115200,
-                          divisions: 4,
-                          label: _baudRate.toString(),
-                          onChanged: (value) {
-                            setState(() {
-                              _baudRate = value.round();
-                            });
+                        TextButton.icon(
+                          onPressed: () async {
+                            await Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (context) => const AdvancedConfigurationScreen(),
+                              ),
+                            );
                           },
+                          icon: const Icon(Icons.settings),
+                          label: const Text('Advanced'),
                         ),
                       ],
                     ),
@@ -218,7 +190,7 @@ class _SerialCommunicationScreenState extends State<SerialCommunicationScreen> {
             ),
             const SizedBox(height: 16),
             
-            // Message Input
+            // Additional Configuration Options
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(16.0),
@@ -226,73 +198,43 @@ class _SerialCommunicationScreenState extends State<SerialCommunicationScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text(
-                      'Send Message',
+                      'Additional Settings',
                       style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                     ),
+                    const SizedBox(height: 16),
+                    const Text('Data Bits: 8'),
                     const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _messageController,
-                            decoration: const InputDecoration(
-                              hintText: 'Enter message to send',
-                              border: OutlineInputBorder(),
-                            ),
-                            enabled: _isConnected,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        ElevatedButton(
-                          onPressed: _isConnected ? _sendMessage : null,
-                          child: const Text('Send'),
-                        ),
-                      ],
-                    ),
+                    const Text('Stop Bits: 1'),
+                    const SizedBox(height: 8),
+                    const Text('Parity: None'),
+                    const SizedBox(height: 8),
+                    const Text('Flow Control: None'),
                   ],
                 ),
               ),
             ),
-            const SizedBox(height: 16),
             
-            // Received Messages
-            Expanded(
-              child: Card(
+            const Spacer(),
+            
+            // Device Information
+            if (_selectedDevice != null)
+              Card(
                 child: Padding(
                   padding: const EdgeInsets.all(16.0),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const Text(
-                        'Messages',
+                        'Device Information',
                         style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                       ),
                       const SizedBox(height: 8),
-                      Expanded(
-                        child: ListView.builder(
-                          controller: _scrollController,
-                          itemCount: _receivedMessages.length,
-                          itemBuilder: (context, index) {
-                            final message = _receivedMessages[index];
-                            final isReceived = message.startsWith('Received:');
-                            return Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 2.0),
-                              child: Text(
-                                message,
-                                style: TextStyle(
-                                  color: isReceived ? Colors.blue : Colors.green,
-                                  fontFamily: 'monospace',
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                      ),
+                      Text('Product Name: ${_selectedDevice!.productName}'),
+                      Text('Device ID: ${_selectedDevice!.deviceId}'),
                     ],
                   ),
                 ),
               ),
-            ),
           ],
         ),
       ),
@@ -301,9 +243,6 @@ class _SerialCommunicationScreenState extends State<SerialCommunicationScreen> {
 
   @override
   void dispose() {
-    _serialService.dispose();
-    _messageController.dispose();
-    _scrollController.dispose();
     super.dispose();
   }
 }
