@@ -1,15 +1,38 @@
 import 'package:flutter/material.dart';
 import 'screens/configuration_screen.dart';
 import 'screens/messaging_screen.dart';
+import 'screens/profile_screen.dart';
 import 'services/serial_communication_service.dart';
 import 'providers/serial_service_provider.dart';
+import 'services/profile_service.dart';
 
 void main() {
   runApp(const MyApp());
 }
 
-class MyApp extends StatelessWidget {
+class MyApp extends StatefulWidget {
   const MyApp({super.key});
+
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  final ProfileService _profileService = ProfileService();
+  Color _primaryColor = Colors.deepPurple;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadProfile();
+  }
+
+  Future<void> _loadProfile() async {
+    await _profileService.loadProfile();
+    setState(() {
+      _primaryColor = _profileService.currentProfile.primaryColor;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -18,7 +41,7 @@ class MyApp extends StatelessWidget {
       child: MaterialApp(
         title: 'Serial Communication',
         theme: ThemeData(
-          colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+          colorScheme: ColorScheme.fromSeed(seedColor: _primaryColor),
           useMaterial3: true,
         ),
         home: const MainNavigationScreen(),
@@ -40,6 +63,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
   final List<Widget> _screens = [
     const ConfigurationScreen(),
     const MessagingScreen(),
+    const ProfileScreen(),
   ];
 
   @override
@@ -64,6 +88,10 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
           BottomNavigationBarItem(
             icon: Icon(Icons.message),
             label: 'Messaging',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.person),
+            label: 'Profile',
           ),
         ],
       ),

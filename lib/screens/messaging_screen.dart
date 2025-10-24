@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import '../services/serial_communication_service.dart';
 import '../providers/serial_service_provider.dart';
 import '../models/chat_message.dart';
+import '../services/profile_service.dart';
 
 class MessagingScreen extends StatefulWidget {
   const MessagingScreen({super.key});
@@ -13,6 +14,7 @@ class MessagingScreen extends StatefulWidget {
 
 class _MessagingScreenState extends State<MessagingScreen> {
   SerialCommunicationService? _serialService;
+  final ProfileService _profileService = ProfileService();
   final TextEditingController _messageController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   
@@ -25,6 +27,7 @@ class _MessagingScreenState extends State<MessagingScreen> {
   @override
   void initState() {
     super.initState();
+    _loadProfile();
   }
 
   @override
@@ -36,10 +39,28 @@ class _MessagingScreenState extends State<MessagingScreen> {
     }
   }
 
+  Future<void> _loadProfile() async {
+    await _profileService.loadProfile();
+  }
+
   void _setupStreams() {
     _serialService?.dataStream.listen((data) {
       setState(() {
-        _messages.add(ChatMessage.received(data.trim()));
+        // Parse received data to extract username if present
+        final messageData = data.trim();
+        String? username;
+        String content = messageData;
+        
+        // Check if message contains username format: "username:message"
+        if (messageData.contains(':') && messageData.indexOf(':') < messageData.length - 1) {
+          final parts = messageData.split(':');
+          if (parts.length >= 2) {
+            username = parts[0].trim();
+            content = parts.sublist(1).join(':').trim();
+          }
+        }
+        
+        _messages.add(ChatMessage.received(content, username: username));
       });
       if (_autoScroll) _scrollToBottom();
     });
@@ -67,15 +88,18 @@ class _MessagingScreenState extends State<MessagingScreen> {
     if (_messageController.text.isEmpty || _serialService == null) return;
 
     final messageText = _messageController.text.trim();
+    final username = _profileService.currentProfile.username;
     _messageController.clear();
 
     // Add sent message immediately for better UX
     setState(() {
-      _messages.add(ChatMessage.sent(messageText));
+      _messages.add(ChatMessage.sent(messageText, username: username));
     });
     if (_autoScroll) _scrollToBottom();
 
-    final success = await _serialService!.sendData(messageText);
+    // Send message with username prefix
+    final messageWithUsername = '$username:$messageText';
+    final success = await _serialService!.sendData(messageWithUsername);
     if (!success) {
       // Remove the message if sending failed
       setState(() {
@@ -418,9 +442,9 @@ class _MessagingScreenState extends State<MessagingScreen> {
                                                       size: 16,
                                                     ),
                                                     const SizedBox(width: 4),
-                                                    const Text(
-                                                      'Received',
-                                                      style: TextStyle(
+                                                    Text(
+                                                      message.displayName,
+                                                      style: const TextStyle(
                                                         color: Colors.blue,
                                                         fontSize: 12,
                                                         fontWeight: FontWeight.bold,
@@ -468,9 +492,9 @@ class _MessagingScreenState extends State<MessagingScreen> {
                                               children: [
                                                 Row(
                                                   children: [
-                                                    const Text(
-                                                      'Sent',
-                                                      style: TextStyle(
+                                                    Text(
+                                                      message.displayName,
+                                                      style: const TextStyle(
                                                         color: Colors.green,
                                                         fontSize: 12,
                                                         fontWeight: FontWeight.bold,
