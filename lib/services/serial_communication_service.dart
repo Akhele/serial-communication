@@ -11,6 +11,10 @@ class SerialCommunicationService {
   Stream<String> get dataStream => _dataController.stream;
   Stream<bool> get connectionStream => _connectionController.stream;
   bool get isConnected => _port != null;
+  
+  // Buffer for incoming data
+  String _buffer = '';
+  Timer? _bufferTimer;
 
   Future<List<UsbDevice>> getAvailableDevices() async {
     try {
@@ -46,7 +50,35 @@ class SerialCommunicationService {
 
       _subscription = _port!.inputStream?.listen((Uint8List data) {
         String receivedData = String.fromCharCodes(data);
-        _dataController.add(receivedData);
+        _buffer += receivedData;
+        
+        // Process complete lines (messages ending with \n or \r\n)
+        if (_buffer.contains('\n')) {
+          List<String> lines = _buffer.split('\n');
+          // Keep the last incomplete line in the buffer
+          _buffer = lines.removeLast();
+          
+          for (String line in lines) {
+            // Remove carriage return if present
+            line = line.replaceAll('\r', '').trim();
+            if (line.isNotEmpty) {
+              _dataController.add(line);
+            }
+          }
+        }
+        
+        // If we've received data and nothing more comes for a short time,
+        // flush the buffer (in case message doesn't end with newline)
+        _bufferTimer?.cancel();
+        _bufferTimer = Timer(const Duration(milliseconds: 50), () {
+          if (_buffer.isNotEmpty) {
+            String line = _buffer.replaceAll('\r', '').trim();
+            if (line.isNotEmpty) {
+              _dataController.add(line);
+            }
+            _buffer = '';
+          }
+        });
       });
 
       _connectionController.add(true);
@@ -62,6 +94,9 @@ class SerialCommunicationService {
       await _subscription?.cancel();
       await _port?.close();
       _port = null;
+      _buffer = '';
+      _bufferTimer?.cancel();
+      _bufferTimer = null;
       _connectionController.add(false);
       return true;
     } catch (e) {
@@ -86,6 +121,9 @@ class SerialCommunicationService {
   void dispose() {
     _subscription?.cancel();
     _port?.close();
+    _buffer = '';
+    _bufferTimer?.cancel();
+    _bufferTimer = null;
     _dataController.close();
     _connectionController.close();
   }
