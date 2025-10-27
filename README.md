@@ -6,6 +6,9 @@ A Flutter application for communicating with USB serial devices. This app allows
 
 **This app + LoRa board = Complete offline messaging solution!**
 
+![System Architecture](images/system-diagram.png)
+*Figure 1: LoRa communication setup - App connects to LoRa board via USB, enabling offline messaging*
+
 When combined with a LoRa-enabled board (like the Heltec Wireless Stick Lite V3), this app creates a complete standalone communication system that works **without any cellular network, WiFi, Bluetooth, or internet connection**. The system uses **Long Range (LoRa) radio technology** to enable device-to-device communication over distances of several kilometers, completely independent of traditional network infrastructure.
 
 ### Why use this system?
@@ -79,8 +82,16 @@ The Arduino code included (`HeltecV3_SerialBridge.ino`) enables your LoRa board 
 6. **View Messages**: All sent and received messages appear in the messages area
 
 ### LoRa Communication Setup
+
+![App Screenshot](images/app-screenshot.png)
+*Figure 2: App interface showing connection status, chat messages, and profile settings*
+
 1. **Setup LoRa Board**: Flash the included `HeltecV3_SerialBridge.ino` to your LoRa board (Heltec V3)
 2. **Connect Board**: Connect your LoRa board to your mobile device via USB
+
+![Hardware Setup](images/hardware-connection.png)
+*Figure 3: Heltec V3 board connected to Android device via USB OTG cable*
+
 3. **Open App**: Launch the Serial Communication app
 4. **Connect to Board**: Select your LoRa board from the device list
 5. **Configure Profile**: Set your username and preferences in the Profile tab
@@ -111,6 +122,10 @@ HeltecV3_SerialBridge/
 ```
 
 ### Arduino LoRa Bridge
+
+![Arduino IDE Setup](images/arduino-setup.png)
+*Figure 4: Arduino IDE showing the LoRa bridge sketch and board configuration*
+
 The `HeltecV3_SerialBridge.ino` sketch provides a bidirectional USB-to-LoRa bridge:
 - Receives messages from the Flutter app via USB Serial
 - Transmits messages to other LoRa devices on the same network
@@ -139,6 +154,17 @@ The `HeltecV3_SerialBridge.ino` sketch provides a bidirectional USB-to-LoRa brid
 - Verify the device is sending data
 - Check baud rate configuration
 - Ensure proper cable connection
+
+## Screenshots and Images
+
+To complete the documentation, you'll need to add the following images to the `images/` folder:
+
+1. **`system-diagram.png`** - Diagram showing the communication flow (Flutter App → USB → LoRa Board → LoRa Network)
+2. **`app-screenshot.png`** - Screenshot of the app's main messaging interface
+3. **`hardware-connection.png`** - Photo of the Heltec V3 board connected to an Android device
+4. **`arduino-setup.png`** - Screenshot of Arduino IDE with the sketch open
+
+Create the `images/` folder in the repository root and add these images for the README to display properly on GitHub.
 
 ## Contributing
 
