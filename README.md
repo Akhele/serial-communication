@@ -168,18 +168,6 @@ The `HeltecV3_SerialBridge.ino` sketch provides a bidirectional USB/BLE-to-LoRa 
 - Check baud rate configuration
 - Ensure proper cable connection
 
-## Screenshots and Images
-
-To complete the documentation, you'll need to add the following images to the `images/` folder:
-
-1. **`system-diagram.png`** - Diagram showing the communication flow (Flutter App → USB → LoRa Board → LoRa Network)
-2. **`app-screenshot.png`** - Screenshot of the app's main messaging interface
-3. **`hardware-connection.png`** - Photo of the Heltec V3 board connected to an Android device
-4. **`arduino-setup.png`** - Screenshot of Arduino IDE with the sketch open
-5. **`bluetooth-scan.png`** - Screenshot of the Bluetooth scan and connect screen
-
-Create the `images/` folder in the repository root and add these images for the README to display properly on GitHub.
-
 ## Contributing
 
 Feel free to submit issues and enhancement requests!
