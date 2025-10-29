@@ -14,7 +14,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
   final ProfileService _profileService = ProfileService();
   final TextEditingController _usernameController = TextEditingController();
   final TextEditingController _displayNameController = TextEditingController();
-  final TextEditingController _emailController = TextEditingController();
   
   UserProfile? _currentProfile;
   bool _isLoading = true;
@@ -45,7 +44,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
       _currentProfile = _profileService.currentProfile;
       _usernameController.text = _currentProfile!.username;
       _displayNameController.text = _currentProfile!.displayName ?? '';
-      _emailController.text = _currentProfile!.email ?? '';
       _isLoading = false;
     });
   }
@@ -66,9 +64,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
       displayName: _displayNameController.text.trim().isEmpty 
           ? null 
           : _displayNameController.text.trim(),
-      email: _emailController.text.trim().isEmpty 
-          ? null 
-          : _emailController.text.trim(),
     );
 
     await _profileService.updateProfile(updatedProfile);
@@ -280,42 +275,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ),
             const SizedBox(height: 16),
 
-            // Email Section
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Email',
-                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 8),
-                    TextField(
-                      controller: _emailController,
-                      decoration: const InputDecoration(
-                        hintText: 'Enter your email (optional)',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.email),
-                      ),
-                      keyboardType: TextInputType.emailAddress,
-                      onChanged: (_) => _markAsChanged(),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Used for account recovery and notifications',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.grey[600],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-
             // App Color Section
             Card(
               child: Padding(
@@ -437,7 +396,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
   void dispose() {
     _usernameController.dispose();
     _displayNameController.dispose();
-    _emailController.dispose();
     super.dispose();
   }
 }

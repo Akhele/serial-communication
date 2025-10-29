@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 class UserProfile {
   final String username;
   final String? displayName;
-  final String? email;
   final int primaryColorValue;
   final DateTime createdAt;
   DateTime updatedAt;
@@ -11,7 +10,6 @@ class UserProfile {
   UserProfile({
     required this.username,
     this.displayName,
-    this.email,
     required this.primaryColorValue,
     required this.createdAt,
     required this.updatedAt,
@@ -32,7 +30,6 @@ class UserProfile {
     return UserProfile(
       username: json['username'] ?? 'Unknown',
       displayName: json['displayName'],
-      email: json['email'],
       primaryColorValue: json['primaryColorValue'] ?? 0xFF673AB7,
       createdAt: DateTime.parse(json['createdAt']),
       updatedAt: DateTime.parse(json['updatedAt']),
@@ -43,7 +40,6 @@ class UserProfile {
     return {
       'username': username,
       'displayName': displayName,
-      'email': email,
       'primaryColorValue': primaryColorValue,
       'createdAt': createdAt.toIso8601String(),
       'updatedAt': updatedAt.toIso8601String(),
@@ -53,13 +49,11 @@ class UserProfile {
   UserProfile copyWith({
     String? username,
     String? displayName,
-    String? email,
     int? primaryColorValue,
   }) {
     return UserProfile(
       username: username ?? this.username,
       displayName: displayName ?? this.displayName,
-      email: email ?? this.email,
       primaryColorValue: primaryColorValue ?? this.primaryColorValue,
       createdAt: createdAt,
       updatedAt: DateTime.now(),

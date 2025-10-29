@@ -37,12 +37,14 @@ class _ConfigurationScreenState extends State<ConfigurationScreen> with SingleTi
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 2, vsync: this, initialIndex: 1); // Start with Bluetooth tab
     _tabController.addListener(() {
       setState(() {
         _selectedConnectionType = _tabController.index == 0 ? ConnectionType.usb : ConnectionType.bluetooth;
       });
     });
+    // Set initial connection type to Bluetooth
+    _selectedConnectionType = ConnectionType.bluetooth;
   }
 
   @override
