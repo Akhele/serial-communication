@@ -23,14 +23,14 @@ The Arduino code included (`HeltecV3_SerialBridge.ino`) enables your LoRa board 
 
 ## Features
 
-- **Device Discovery**: Automatically detect available USB serial devices
-- **Connection Management**: Connect/disconnect to/from devices with configurable baud rates
+- **Bluetooth (BLE) Connectivity**: Pair and chat over BLE on Android and iOS
+- **USB Serial Connectivity**: Connect/disconnect with configurable baud rates
 - **Data Communication**: Send and receive text data in real-time
-- **LoRa Bridge Integration**: Connect to LoRa boards for offline long-range communication
-- **User Profiles**: Customizable user profiles with personalized settings
-- **Message History**: View and export complete conversation history
-- **Modern UI**: Clean, Material Design 3 interface with real-time status updates
-- **Cross-Platform**: Works on both Android and iOS
+- **LoRa Bridge Integration**: Offline long-range messaging via LoRa boards
+- **WhatsApp-like UI**: Simple chat bubbles, timestamps, avatars, read ticks
+- **User Profiles**: Customizable username, display name, and theme color
+- **Message History**: View and export conversation logs
+- **Cross-Platform**: Android and iOS support
 
 ## Getting Started
 
@@ -38,7 +38,8 @@ The Arduino code included (`HeltecV3_SerialBridge.ino`) enables your LoRa board 
 
 - Flutter SDK (3.0.0 or higher)
 - Android Studio / Xcode for platform-specific development
-- USB serial device for testing
+- USB serial device (optional, for USB mode)
+- BLE-capable phone (required for Bluetooth mode)
 - **For LoRa communication**: Heltec Wireless Stick Lite V3 (or compatible LoRa board) and Arduino IDE
 
 ### Installation
@@ -62,18 +63,27 @@ The Arduino code included (`HeltecV3_SerialBridge.ino`) enables your LoRa board 
 ### Platform Setup
 
 #### Android
-- The app requires USB permissions which are already configured in `AndroidManifest.xml`
-- Connect your USB device via USB OTG adapter
-- Grant USB permissions when prompted
+- USB and Bluetooth permissions are configured in `AndroidManifest.xml`
+- For Android 12+, the app requests `BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT`
+- Connect USB devices via OTG; grant permissions when prompted
 
 #### iOS
-- iOS has limited USB serial support
-- Consider using Bluetooth or WiFi-based communication for iOS devices
-- The app structure supports iOS but may need additional configuration for specific use cases
+- iOS has limited USB serial support (prefer Bluetooth on iOS)
+- Bluetooth usage descriptions are included in `Info.plist`
+- Background mode `bluetooth-central` is enabled for stable BLE sessions
 
 ## Usage
 
-### Basic Serial Communication
+### Bluetooth (BLE) Connection — Default
+When the app launches, it opens the Configuration screen with the Bluetooth tab selected by default.
+
+1. Ensure Bluetooth is enabled on your phone
+2. Open the app (Bluetooth tab appears first)
+3. Tap refresh to scan and select the LoRa Bridge device (e.g., "Heltec V3 LoRa Bridge")
+4. Connect and switch to the Messaging tab to chat
+5. Messages are exchanged over BLE and, via the board, over LoRa
+
+### Basic Serial Communication (USB)
 1. **Connect Device**: Connect your USB serial device to your mobile device
 2. **Select Device**: Choose your device from the dropdown list
 3. **Configure Settings**: Adjust baud rate if needed (default: 9600)
@@ -118,24 +128,27 @@ lib/
     └── user_profile.dart                     # User profile model
 
 HeltecV3_SerialBridge/
-└── HeltecV3_SerialBridge.ino                # Arduino LoRa bridge for Heltec V3 boards
+└── HeltecV3_SerialBridge.ino                # Arduino LoRa + BLE bridge for Heltec V3
 ```
 
-### Arduino LoRa Bridge
+### Arduino LoRa + BLE Bridge
 
 ![Arduino IDE Setup](images/arduino-setup.png)
 *Figure 4: Arduino IDE showing the LoRa bridge sketch and board configuration*
 
-The `HeltecV3_SerialBridge.ino` sketch provides a bidirectional USB-to-LoRa bridge:
-- Receives messages from the Flutter app via USB Serial
+The `HeltecV3_SerialBridge.ino` sketch provides a bidirectional USB/BLE-to-LoRa bridge:
+- Receives messages from the Flutter app via USB Serial or Bluetooth (BLE)
 - Transmits messages to other LoRa devices on the same network
-- Listens for incoming LoRa packets and forwards them to the app
-- No external dependencies required (uses built-in LoRaWAN_APP library)
+- Listens for LoRa packets and forwards them to the app over USB and/or BLE
+- BLE service UUIDs: FFE0 (service), FFE1 (RX/TX characteristic)
+- Uses Heltec LoRaWAN drivers and ESP32 BLE (no external libs required)
 
 ## Dependencies
 
-- `usb_serial`: For USB serial communication
-- `permission_handler`: For handling USB permissions
+- `flutter_blue_plus`: Bluetooth Low Energy (Android/iOS)
+- `usb_serial`: USB serial communication
+- `permission_handler`: USB permissions handling
+- `shared_preferences`: Profile persistence
 - `flutter`: Flutter SDK
 
 ## Troubleshooting
@@ -163,6 +176,7 @@ To complete the documentation, you'll need to add the following images to the `i
 2. **`app-screenshot.png`** - Screenshot of the app's main messaging interface
 3. **`hardware-connection.png`** - Photo of the Heltec V3 board connected to an Android device
 4. **`arduino-setup.png`** - Screenshot of Arduino IDE with the sketch open
+5. **`bluetooth-scan.png`** - Screenshot of the Bluetooth scan and connect screen
 
 Create the `images/` folder in the repository root and add these images for the README to display properly on GitHub.
 

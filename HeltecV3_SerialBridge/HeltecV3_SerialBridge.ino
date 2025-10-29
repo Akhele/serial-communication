@@ -17,15 +17,19 @@
 #include "BLEServer.h"
 #include "BLEUtils.h"
 #include "BLE2902.h"
+#include "esp_system.h"
 
 // Enable/disable Bluetooth (set to false to disable BLE and save resources)
 #define ENABLE_BLUETOOTH true
 
 #if ENABLE_BLUETOOTH
-// BLE Serial Service UUID (Standard BLE Serial UUID)
-#define SERVICE_UUID        "0000ffe0-0000-1000-8000-00805f9b34fb"
-#define CHARACTERISTIC_UUID_TX "0000ffe1-0000-1000-8000-00805f9b34fb"
-#define CHARACTERISTIC_UUID_RX "0000ffe1-0000-1000-8000-00805f9b34fb"
+// Nordic UART Service (NUS) UUIDs
+// Service: 6E400001-B5A3-F393-E0A9-E50E24DCCA9E
+// TX Char (notify): 6E400003-B5A3-F393-E0A9-E50E24DCCA9E
+// RX Char (write):  6E400002-B5A3-F393-E0A9-E50E24DCCA9E
+#define SERVICE_UUID            "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+#define CHARACTERISTIC_UUID_TX  "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
+#define CHARACTERISTIC_UUID_RX  "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
 
 BLEServer *pServer = NULL;
 BLECharacteristic *pTxCharacteristic = NULL;
@@ -34,8 +38,11 @@ bool deviceConnected = false;
 bool oldDeviceConnected = false;
 #endif
 
+// Forward declarations
+void processIncomingMessage(String incoming);
+
 // Configuration
-#define RF_FREQUENCY        433000000  // 914335 MHz (band) - adjust for your region
+#define RF_FREQUENCY        433000000  // 433 MHz (band) - adjust for your region
 #define TX_POWER            14         // Max power for V3
 #define SPREADING_FACTOR    7          // SF7
 #define BANDWIDTH           0          // 125 kHz
@@ -72,13 +79,15 @@ class MyServerCallbacks: public BLEServerCallbacks {
 
 class MyCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
-        std::string rxValue = pCharacteristic->getValue();
-        if (rxValue.length() > 0) {
-            String incoming = String(rxValue.c_str());
-            incoming.trim();
-            if (incoming.length() > 0) {
-                processIncomingMessage(incoming);
-            }
+        String incoming = pCharacteristic->getValue();
+        Serial.print("BLE: Received data (length=");
+        Serial.print(incoming.length());
+        Serial.print("): ");
+        Serial.println(incoming);
+        
+        if (incoming.length() > 0) {
+            // Process the message
+            processIncomingMessage(incoming);
         }
     }
 };
@@ -117,8 +126,12 @@ void setup() {
     Serial.println("LoRa Radio: Active");
     
 #if ENABLE_BLUETOOTH
-    // Initialize BLE
-    BLEDevice::init("Heltec V3 LoRa Bridge");
+    // Initialize BLE with randomized suffix in device name
+    uint32_t seed = (uint32_t)millis() ^ (esp_random());
+    randomSeed(seed);
+    int suffix = random(1000, 9999);
+    String deviceName = String("Heltec V3 LoRa Bridge ") + String(suffix);
+    BLEDevice::init(deviceName.c_str());
     pServer = BLEDevice::createServer();
     pServer->setCallbacks(new MyServerCallbacks());
     
@@ -144,18 +157,26 @@ void setup() {
     pServer->getAdvertising()->start();
     
     Serial.println("Bluetooth BLE: Active");
-    Serial.println("BLE Device Name: Heltec V3 LoRa Bridge");
+    Serial.print("BLE Device Name: ");
+    Serial.println(deviceName);
     Serial.println("Scan for this device in your app");
 #endif
     Serial.println();
 }
 
 void loop() {
-    // Keep LoRa listening for LoRa-to-LoRa communication
-    Radio.Rx(0);
-    
-    // Process radio interrupts
+    // CRITICAL: Process radio interrupts FIRST - must be called frequently
+    // This triggers OnRxDone callback when LoRa packet arrives
     Radio.IrqProcess();
+    
+    // Keep LoRa listening for LoRa-to-LoRa communication
+    // Radio.Rx(0) sets receiver to continuous listening mode
+    // Only call if not already in RX mode or if we just finished TX
+    static unsigned long lastRxMode = 0;
+    if (millis() - lastRxMode > 1000) {  // Re-enter RX mode every second (handles any issues)
+        Radio.Rx(0);
+        lastRxMode = millis();
+    }
     
     // Handle USB Serial input (from Flutter app)
     if (Serial.available() > 0) {
@@ -177,6 +198,8 @@ void loop() {
     
     // Handle LoRa packets (from other LoRa devices)
     if (hasLoRaPacket) {
+        Serial.println("LoRa: Processing received packet...");
+        
         uint16_t copyLen = loraRxSize < sizeof(loraRxBuffer) ? loraRxSize : sizeof(loraRxBuffer);
         
         // Copy received data to string buffer
@@ -185,19 +208,53 @@ void loop() {
             loraMessage += (char)loraRxBuffer[i];
         }
         
+        Serial.print("LoRa: Message received: ");
+        Serial.println(loraMessage);
+        Serial.print("LoRa: Message length: ");
+        Serial.println(loraMessage.length());
+        
         // Forward to USB Serial and/or Bluetooth (to Flutter app)
         // The app expects "username:message" format
+        Serial.print("USB Serial: ");
         Serial.println(loraMessage);
         
 #if ENABLE_BLUETOOTH
         // Also send via Bluetooth if connected
+        Serial.print("BLE: Checking connection - deviceConnected=");
+        Serial.print(deviceConnected);
+        Serial.print(", pTxCharacteristic=");
+        Serial.println((pTxCharacteristic != NULL) ? "OK" : "NULL");
+        
         if (deviceConnected && pTxCharacteristic != NULL) {
-            pTxCharacteristic->setValue((uint8_t*)loraMessage.c_str(), loraMessage.length());
+            // Add newline for app to recognize complete message
+            String bleMessage = loraMessage + "\n";
+            Serial.print("BLE: Preparing to send LoRa message: ");
+            Serial.println(bleMessage);
+            
+            // Set the value
+            pTxCharacteristic->setValue((uint8_t*)bleMessage.c_str(), bleMessage.length());
+            
+            // Notify (returns void)
             pTxCharacteristic->notify();
+            Serial.println("BLE: LoRa message notification sent");
+            Serial.print("BLE: Message sent via notify, length=");
+            Serial.println(bleMessage.length());
+        } else {
+            if (!deviceConnected) {
+                Serial.println("BLE: ERROR - Not connected to phone, cannot send LoRa message!");
+            }
+            if (pTxCharacteristic == NULL) {
+                Serial.println("BLE: ERROR - TX characteristic is NULL, cannot send LoRa message!");
+            }
         }
+#else
+        Serial.println("BLE: Disabled in build");
 #endif
         
+        // Clear the flag and buffer
         hasLoRaPacket = false;
+        loraRxSize = 0;
+        Serial.println("LoRa: Packet processing complete");
     }
     
 #if ENABLE_BLUETOOTH
@@ -215,15 +272,38 @@ void loop() {
     }
 #endif
     
+    // Periodic status (every 10 seconds) to confirm system is alive
+    static unsigned long lastStatus = 0;
+    if (millis() - lastStatus > 10000) {
+        Serial.print("Status: LoRa listening, BLE=");
+        Serial.print(deviceConnected ? "connected" : "disconnected");
+        Serial.print(", lastLoRaRx=");
+        Serial.println(millis() - lastStatus);
+        lastStatus = millis();
+    }
+    
     // Small delay to prevent overwhelming the system
-    delay(10);
+    // Keep this short so Radio.IrqProcess() is called frequently
+    delay(5);
 }
 
 // Process incoming messages from USB or Bluetooth
 void processIncomingMessage(String incoming) {
+    // Trim only whitespace, keep the actual message content
+    incoming.trim();
+    
+    if (incoming.length() == 0) {
+        return;
+    }
+    
+    Serial.print("Processing message: ");
+    Serial.println(incoming);
+    
     // Forward to LoRa if not an AT command
     if (!incoming.startsWith("AT")) {
         // Send via LoRa to other devices
+        Serial.print("Sending to LoRa: ");
+        Serial.println(incoming);
         sendLoRaMessage(incoming);
     } else {
         // Process AT commands
@@ -232,11 +312,16 @@ void processIncomingMessage(String incoming) {
 }
 
 // Called by radio driver when a packet is received
+// This is an interrupt callback - must be fast and avoid delays
 void OnRxDone(uint8_t *payload, uint16_t size, int16_t rssi, int8_t snr) {
+    // This runs in interrupt context - minimize Serial printing
+    // Just copy the data quickly
     uint16_t copyLen = size < sizeof(loraRxBuffer) ? size : sizeof(loraRxBuffer);
-    memcpy(loraRxBuffer, payload, copyLen);67
+    memcpy(loraRxBuffer, payload, copyLen);
     loraRxSize = copyLen;
     hasLoRaPacket = true;
+    
+    // Detailed logging happens in loop() when processing the packet
 }
 
 // Process AT commands (optional)
@@ -270,6 +355,11 @@ void sendLoRaMessage(String message) {
     uint8_t* data = (uint8_t*)message.c_str();
     uint8_t msgLen = message.length();
     
+    Serial.print("LoRa TX: Sending message (length=");
+    Serial.print(msgLen);
+    Serial.print("): ");
+    Serial.println(message);
+    
     // Configure TX settings
     Radio.SetTxConfig(MODEM_LORA, TX_POWER, 0, BANDWIDTH,
                       SPREADING_FACTOR, CODING_RATE,
@@ -277,7 +367,13 @@ void sendLoRaMessage(String message) {
     
     // Send the data
     Radio.Send(data, msgLen);
+    Serial.println("LoRa TX: Send command issued");
     
-    // Wait for TX to complete
-    delay(100);
+    // Wait for TX to complete (give it time to transmit)
+    delay(200);
+    Serial.println("LoRa TX: Transmission complete");
+    
+    // Re-enable RX mode after transmission
+    Radio.Rx(0);
+    Serial.println("LoRa: RX mode re-enabled after TX");
 }

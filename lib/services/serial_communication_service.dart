@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:typed_data';
+import 'dart:convert';
 import 'package:usb_serial/usb_serial.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
@@ -140,33 +141,52 @@ class SerialCommunicationService {
       // Connect to device
       await device.connect(timeout: const Duration(seconds: 15), autoConnect: false);
       
+      // Increase MTU for better throughput if possible
+      try {
+        await device.requestMtu(247);
+      } catch (_) {}
+      
       // Discover services
+      print('Bluetooth: Discovering services...');
       List<BluetoothService> services = await device.discoverServices();
+      print('Bluetooth: Found ${services.length} services');
+      
+      // Print all services and characteristics for debugging
+      for (var service in services) {
+        print('Bluetooth: Service UUID: ${service.uuid}');
+        print('Bluetooth: Service has ${service.characteristics.length} characteristics');
+        for (var char in service.characteristics) {
+          print('Bluetooth:   Char UUID: ${char.uuid}, Properties: notify=${char.properties.notify}, write=${char.properties.write}, writeNoResponse=${char.properties.writeWithoutResponse}');
+        }
+      }
       
       // Find the Serial Port Profile (SPP) service
-      // Standard BLE Serial service UUID: 0000ffe0-0000-1000-8000-00805f9b34fb
-      // Characteristic for write: 0000ffe1-0000-1000-8000-00805f9b34fb
+      // Nordic UART Service: 6E400001-B5A3-F393-E0A9-E50E24DCCA9E
+      // TX Char (notify): 6E400003-B5A3-F393-E0A9-E50E24DCCA9E
+      // RX Char (write):  6E400002-B5A3-F393-E0A9-E50E24DCCA9E
       BluetoothService? serialService;
       
       // Try common BLE Serial UUIDs
-      final serialServiceUuids = [
-        Guid("0000ffe0-0000-1000-8000-00805f9b34fb"), // Common BLE Serial
-        Guid("6e400001-b5a3-f393-e0a9-e50e24dcca9e"), // Nordic UART
-      ];
+      final nordicServiceUuid = Guid("6E400001-B5A3-F393-E0A9-E50E24DCCA9E");
+      final commonSerialUuid = Guid("0000ffe0-0000-1000-8000-00805f9b34fb");
       
       for (BluetoothService service in services) {
-        if (serialServiceUuids.contains(service.uuid)) {
+        print('Bluetooth: Checking service ${service.uuid}');
+        if (service.uuid == nordicServiceUuid || service.uuid == commonSerialUuid) {
           serialService = service;
+          print('Bluetooth: Found matching service: ${service.uuid}');
           break;
         }
       }
       
       // If not found, try to use the first available service with write characteristic
       if (serialService == null) {
+        print('Bluetooth: Service not found by UUID, searching by characteristics...');
         for (BluetoothService service in services) {
           for (BluetoothCharacteristic char in service.characteristics) {
             if (char.properties.write || char.properties.writeWithoutResponse) {
               serialService = service;
+              print('Bluetooth: Found service with write characteristic: ${service.uuid}');
               break;
             }
           }
@@ -175,34 +195,97 @@ class SerialCommunicationService {
       }
       
       if (serialService == null) {
+        print('Bluetooth: ERROR - No suitable service found!');
         await device.disconnect();
         return false;
       }
       
+      print('Bluetooth: Using service: ${serialService.uuid}');
+      
       // Find read and write characteristics
+      // Nordic UART: TX (notify) = 6E400003-B5A3-F393-E0A9-E50E24DCCA9E
+      //              RX (write)  = 6E400002-B5A3-F393-E0A9-E50E24DCCA9E
+      final txCharUuid = Guid("6E400003-B5A3-F393-E0A9-E50E24DCCA9E");
+      final rxCharUuid = Guid("6E400002-B5A3-F393-E0A9-E50E24DCCA9E");
+      
       for (BluetoothCharacteristic char in serialService.characteristics) {
-        if (char.properties.read || char.properties.notify) {
+        print('Bluetooth: Checking char ${char.uuid}, notify=${char.properties.notify}, write=${char.properties.write}, writeNoResponse=${char.properties.writeWithoutResponse}');
+        
+        // Match by UUID first (exact match)
+        String charUuidStr = char.uuid.toString().toUpperCase();
+        String txUuidStr = txCharUuid.toString().toUpperCase();
+        String rxUuidStr = rxCharUuid.toString().toUpperCase();
+        
+        if (charUuidStr == txUuidStr || char.uuid == txCharUuid) {
           _readCharacteristic = char;
-          if (char.properties.notify) {
-            await char.setNotifyValue(true);
-          }
-        }
-        if (char.properties.write || char.properties.writeWithoutResponse) {
+          print('Bluetooth: Found TX/Read characteristic by UUID: ${char.uuid}');
+        } else if (charUuidStr == rxUuidStr || char.uuid == rxCharUuid) {
           _writeCharacteristic = char;
+          print('Bluetooth: Found RX/Write characteristic by UUID: ${char.uuid}');
+        }
+      }
+      
+      // If UUIDs didn't match, try by properties (fallback)
+      if (_readCharacteristic == null) {
+        for (BluetoothCharacteristic char in serialService.characteristics) {
+          if (char.properties.notify && char.uuid != _writeCharacteristic?.uuid) {
+            _readCharacteristic = char;
+            print('Bluetooth: Found TX/Read characteristic by properties: ${char.uuid}');
+            break;
+          }
         }
       }
       
       if (_writeCharacteristic == null) {
+        for (BluetoothCharacteristic char in serialService.characteristics) {
+          if ((char.properties.write || char.properties.writeWithoutResponse) && 
+              char.uuid != _readCharacteristic?.uuid) {
+            _writeCharacteristic = char;
+            print('Bluetooth: Found RX/Write characteristic by properties: ${char.uuid}');
+            break;
+          }
+        }
+      }
+      
+      if (_writeCharacteristic == null) {
+        print('Bluetooth: ERROR - Write characteristic not found!');
         await device.disconnect();
         return false;
       }
       
-      // Subscribe to notifications/reads
-      if (_readCharacteristic != null) {
-        _bluetoothSubscription = _readCharacteristic!.lastValueStream.listen((List<int> data) {
-          _processIncomingData(Uint8List.fromList(data));
-        });
+      if (_readCharacteristic == null) {
+        print('Bluetooth: WARNING - Read/Notify characteristic not found, receive may not work!');
       }
+      
+      // Enable notifications then subscribe to onValueReceived
+      if (_readCharacteristic != null) {
+        print('Bluetooth: Enabling notifications on ${_readCharacteristic!.uuid}...');
+        try {
+          await _readCharacteristic!.setNotifyValue(true);
+          print('Bluetooth: Notifications enabled successfully');
+          
+          // Subscribe to value changes
+          _bluetoothSubscription = _readCharacteristic!.onValueReceived.listen(
+            (List<int> data) {
+              print('Bluetooth: Received ${data.length} bytes: ${String.fromCharCodes(data)}');
+              _processIncomingData(Uint8List.fromList(data));
+            },
+            onError: (error) {
+              print('Bluetooth: Error in notification stream: $error');
+            },
+            cancelOnError: false,
+          );
+          print('Bluetooth: Subscribed to notifications');
+        } catch (e) {
+          print('Bluetooth: Error enabling notifications: $e');
+          print('Bluetooth: Stack trace: ${StackTrace.current}');
+        }
+      } else {
+        print('Bluetooth: ERROR - Read characteristic is null, cannot receive messages!');
+      }
+      
+      print('Bluetooth: Connection setup complete');
+      print('Bluetooth: Write char: ${_writeCharacteristic?.uuid}, Read char: ${_readCharacteristic?.uuid}');
       
       _currentConnectionType = ConnectionType.bluetooth;
       _connectionController.add(true);
@@ -215,7 +298,14 @@ class SerialCommunicationService {
   }
 
   void _processIncomingData(Uint8List data) {
-    String receivedData = String.fromCharCodes(data);
+    String receivedData;
+    try {
+      receivedData = utf8.decode(data, allowMalformed: true);
+    } catch (_) {
+      // Fallback in case of partial UTF-8 sequences
+      receivedData = String.fromCharCodes(data);
+    }
+    print('Processing incoming data: "$receivedData" (buffer length: ${_buffer.length})');
     _buffer += receivedData;
     
     // Process complete lines (messages ending with \n or \r\n)
@@ -279,20 +369,30 @@ class SerialCommunicationService {
     try {
       if (_currentConnectionType == ConnectionType.usb) {
         if (_port == null) return false;
-        Uint8List bytes = Uint8List.fromList(data.codeUnits);
+        Uint8List bytes = Uint8List.fromList(utf8.encode(data));
         await _port!.write(bytes);
         return true;
       } else if (_currentConnectionType == ConnectionType.bluetooth) {
-        if (_writeCharacteristic == null) return false;
-        Uint8List bytes = Uint8List.fromList(data.codeUnits);
+        if (_writeCharacteristic == null) {
+          print('Bluetooth: Write characteristic is null!');
+          return false;
+        }
+        Uint8List bytes = Uint8List.fromList(utf8.encode(data));
+        print('Bluetooth: Sending ${bytes.length} bytes: "$data"');
         
         // Use write without response if available (faster), otherwise use write
-        if (_writeCharacteristic!.properties.writeWithoutResponse) {
-          await _writeCharacteristic!.write(bytes, withoutResponse: true);
-        } else {
-          await _writeCharacteristic!.write(bytes, withoutResponse: false);
+        try {
+          if (_writeCharacteristic!.properties.writeWithoutResponse) {
+            await _writeCharacteristic!.write(bytes, withoutResponse: true);
+          } else {
+            await _writeCharacteristic!.write(bytes, withoutResponse: false);
+          }
+          print('Bluetooth: Message sent successfully');
+          return true;
+        } catch (e) {
+          print('Bluetooth: Error sending message: $e');
+          return false;
         }
-        return true;
       }
       return false;
     } catch (e) {
