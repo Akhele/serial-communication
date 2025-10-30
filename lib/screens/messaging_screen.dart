@@ -4,6 +4,7 @@ import '../services/serial_communication_service.dart';
 import '../providers/serial_service_provider.dart';
 import '../models/chat_message.dart';
 import '../services/profile_service.dart';
+import '../services/notification_service.dart';
 
 class MessagingScreen extends StatefulWidget {
   const MessagingScreen({super.key});
@@ -52,23 +53,30 @@ class _MessagingScreenState extends State<MessagingScreen> {
 
   void _setupStreams() {
     _serialService?.dataStream.listen((data) {
-      setState(() {
-        // Parse received data to extract username if present
-        final messageData = data.trim();
-        String? username;
-        String content = messageData;
-        
-        // Check if message contains username format: "username:message"
-        if (messageData.contains(':') && messageData.indexOf(':') < messageData.length - 1) {
-          final parts = messageData.split(':');
-          if (parts.length >= 2) {
-            username = parts[0].trim();
-            content = parts.sublist(1).join(':').trim();
-          }
+      // Parse received data to extract username if present
+      final messageData = data.trim();
+      String? parsedUsername;
+      String parsedContent = messageData;
+
+      // Check if message contains username format: "username:message"
+      if (messageData.contains(':') && messageData.indexOf(':') < messageData.length - 1) {
+        final parts = messageData.split(':');
+        if (parts.length >= 2) {
+          parsedUsername = parts[0].trim();
+          parsedContent = parts.sublist(1).join(':').trim();
         }
-        
-        _messages.add(ChatMessage.received(content, username: username));
+      }
+
+      setState(() {
+        _messages.add(ChatMessage.received(parsedContent, username: parsedUsername));
       });
+
+      // Push local notification for the received message
+      final title = 'New message' + (parsedUsername != null && parsedUsername.isNotEmpty ? ' from $parsedUsername' : '');
+      NotificationService.instance.showMessageNotification(
+        title: title,
+        body: parsedContent,
+      );
       if (_autoScroll) _scrollToBottom();
     });
 
@@ -455,13 +463,7 @@ class _MessagingScreenState extends State<MessagingScreen> {
                               enabled: _isConnected,
                             ),
                           ),
-                          IconButton(
-                            icon: Icon(
-                              Icons.emoji_emotions_outlined,
-                              color: Colors.grey[600],
-                            ),
-                            onPressed: () {},
-                          ),
+                          // Emoji icon removed
                         ],
                       ),
                     ),
@@ -481,6 +483,8 @@ class _MessagingScreenState extends State<MessagingScreen> {
               ),
             ),
           ),
+
+          // No in-app emoji picker; use system keyboard emojis
         ],
       ),
     );

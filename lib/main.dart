@@ -5,8 +5,11 @@ import 'screens/profile_screen.dart';
 import 'services/serial_communication_service.dart';
 import 'providers/serial_service_provider.dart';
 import 'services/profile_service.dart';
+import 'services/notification_service.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await NotificationService.instance.initialize();
   runApp(const MyApp());
 }
 
