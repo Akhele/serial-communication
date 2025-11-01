@@ -326,8 +326,11 @@ class SerialCommunicationService {
     // If we've received data and nothing more comes for a short time,
     // flush the buffer (in case message doesn't end with newline)
     _bufferTimer?.cancel();
-    _bufferTimer = Timer(const Duration(milliseconds: 50), () {
+    // Use longer timeout for audio messages which arrive in chunks
+    final timeout = _buffer.contains('AUDIO_B64:') ? 500 : 50;
+    _bufferTimer = Timer(Duration(milliseconds: timeout), () {
       if (_buffer.isNotEmpty) {
+        print('Buffer timeout: flushing ${_buffer.length} bytes');
         String line = _buffer.replaceAll('\r', '').trim();
         if (line.isNotEmpty) {
           _dataController.add(line);

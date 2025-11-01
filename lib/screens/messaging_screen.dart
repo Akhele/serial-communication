@@ -74,6 +74,7 @@ class _MessagingScreenState extends State<MessagingScreen> {
     _serialService?.dataStream.listen((data) {
       // Parse received data to extract username if present
       final messageData = data.trim();
+      print('App: Received raw data (length=${messageData.length}): "${messageData.substring(0, messageData.length > 100 ? 100 : messageData.length)}..."');
       String? parsedUsername;
       String parsedContent = messageData;
 
@@ -86,26 +87,38 @@ class _MessagingScreenState extends State<MessagingScreen> {
         }
       }
 
+      print('App: Parsed - username="$parsedUsername", content length=${parsedContent.length}');
+
       // Detect audio payload: AUDIO_B64:<durationMs>:<base64>
       if (parsedContent.startsWith('AUDIO_B64:')) {
+        print('App: Detected AUDIO_B64 payload');
         try {
           final rest = parsedContent.substring('AUDIO_B64:'.length);
           final idx = rest.indexOf(':');
+          if (idx < 0) {
+            print('App: ERROR - Missing second colon in AUDIO_B64');
+            throw Exception('Invalid AUDIO_B64 format');
+          }
           final durationMs = int.tryParse(rest.substring(0, idx)) ?? 0;
           final b64 = rest.substring(idx + 1);
+          print('App: Decoding audio - duration=$durationMs ms, base64 length=${b64.length}');
           final bytes = base64Decode(b64);
+          print('App: Decoded ${bytes.length} bytes, saving to file...');
           _saveIncomingAudio(bytes).then((path) {
+            print('App: Audio saved to $path, adding to messages');
             setState(() {
               _messages.add(ChatMessage.audioReceived(path, durationMs, username: parsedUsername));
             });
             if (_autoScroll) _scrollToBottom();
           });
-        } catch (_) {
+        } catch (e) {
+          print('App: ERROR decoding audio: $e');
           setState(() {
-            _messages.add(ChatMessage.received(parsedContent, username: parsedUsername));
+            _messages.add(ChatMessage.received('[Error: Invalid audio] $parsedContent', username: parsedUsername));
           });
         }
       } else {
+        print('App: Regular text message');
         setState(() {
           _messages.add(ChatMessage.received(parsedContent, username: parsedUsername));
         });
