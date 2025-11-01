@@ -18,6 +18,8 @@
     <!-- Bluetooth feature declarations -->
     <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+    <!-- Microphone permission for audio recording -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     
     <application
         android:label="serial_communication"

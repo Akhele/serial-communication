@@ -5,6 +5,12 @@ import '../providers/serial_service_provider.dart';
 import '../models/chat_message.dart';
 import '../services/profile_service.dart';
 import '../services/notification_service.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:flutter_sound/flutter_sound.dart';
+import 'dart:io';
+import 'dart:convert';
+import 'package:just_audio/just_audio.dart';
 
 class MessagingScreen extends StatefulWidget {
   const MessagingScreen({super.key});
@@ -24,6 +30,11 @@ class _MessagingScreenState extends State<MessagingScreen> {
   bool _isConnected = false;
   bool _autoScroll = true;
   String _filterText = '';
+  bool _isRecording = false;
+  final FlutterSoundRecorder _recorder = FlutterSoundRecorder();
+  final AudioPlayer _audioPlayer = AudioPlayer();
+  String? _currentRecordingPath;
+  Stopwatch _recordStopwatch = Stopwatch();
 
   // WhatsApp colors
   static const Color whatsappGreen = Color(0xFF25D366);
@@ -36,6 +47,14 @@ class _MessagingScreenState extends State<MessagingScreen> {
   void initState() {
     super.initState();
     _loadProfile();
+    _recorder.openRecorder();
+  }
+
+  Future<String> _saveIncomingAudio(List<int> bytes) async {
+    final dir = await getTemporaryDirectory();
+    final file = File('${dir.path}/voice_${DateTime.now().millisecondsSinceEpoch}.m4a');
+    await file.writeAsBytes(bytes, flush: true);
+    return file.path;
   }
 
   @override
@@ -67,16 +86,36 @@ class _MessagingScreenState extends State<MessagingScreen> {
         }
       }
 
-      setState(() {
-        _messages.add(ChatMessage.received(parsedContent, username: parsedUsername));
-      });
+      // Detect audio payload: AUDIO_B64:<durationMs>:<base64>
+      if (parsedContent.startsWith('AUDIO_B64:')) {
+        try {
+          final rest = parsedContent.substring('AUDIO_B64:'.length);
+          final idx = rest.indexOf(':');
+          final durationMs = int.tryParse(rest.substring(0, idx)) ?? 0;
+          final b64 = rest.substring(idx + 1);
+          final bytes = base64Decode(b64);
+          _saveIncomingAudio(bytes).then((path) {
+            setState(() {
+              _messages.add(ChatMessage.audioReceived(path, durationMs, username: parsedUsername));
+            });
+            if (_autoScroll) _scrollToBottom();
+          });
+        } catch (_) {
+          setState(() {
+            _messages.add(ChatMessage.received(parsedContent, username: parsedUsername));
+          });
+        }
+      } else {
+        setState(() {
+          _messages.add(ChatMessage.received(parsedContent, username: parsedUsername));
+        });
+      }
 
       // Push local notification for the received message
       final title = 'New message' + (parsedUsername != null && parsedUsername.isNotEmpty ? ' from $parsedUsername' : '');
-      NotificationService.instance.showMessageNotification(
-        title: title,
-        body: parsedContent,
-      );
+      // For audio, show generic body
+      final notifBody = parsedContent.startsWith('AUDIO_B64:') ? 'Voice message' : parsedContent;
+      NotificationService.instance.showMessageNotification(title: title, body: notifBody);
       if (_autoScroll) _scrollToBottom();
     });
 
@@ -124,6 +163,68 @@ class _MessagingScreenState extends State<MessagingScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Failed to send message')),
       );
+    }
+  }
+
+  Future<void> _toggleRecord() async {
+    if (_isRecording) {
+      await _stopAndSendAudio();
+    } else {
+      await _startRecording();
+    }
+  }
+
+  Future<void> _startRecording() async {
+    if (await Permission.microphone.request().isDenied) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Microphone permission denied')));
+      return;
+    }
+    final dir = await getTemporaryDirectory();
+    _currentRecordingPath = '${dir.path}/voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
+    final canRecord = await Permission.microphone.isGranted || await Permission.microphone.request().isGranted;
+    if (!canRecord) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Recording not permitted')));
+      return;
+    }
+    await _recorder.startRecorder(
+      toFile: _currentRecordingPath!,
+      codec: Codec.aacMP4,
+      bitRate: 96000,
+      sampleRate: 44100,
+    );
+    setState(() { _isRecording = true; });
+    _recordStopwatch..reset()..start();
+  }
+
+  Future<void> _stopAndSendAudio() async {
+    try {
+      final path = await _recorder.stopRecorder();
+      _recordStopwatch.stop();
+      setState(() { _isRecording = false; });
+      if (path == null) return;
+      final file = File(path);
+      if (!(await file.exists())) return;
+      final bytes = await file.readAsBytes();
+      final b64 = base64Encode(bytes);
+      final durationMs = _recordStopwatch.elapsedMilliseconds;
+      final username = _profileService.currentProfile.username;
+
+      // Add to UI immediately
+      setState(() {
+        _messages.add(ChatMessage.audioSent(path, durationMs, username: username));
+      });
+      if (_autoScroll) _scrollToBottom();
+
+      // Send as AUDIO_B64
+      final payload = '$username:AUDIO_B64:$durationMs:$b64\n';
+      final success = await _serialService!.sendData(payload);
+      if (!success) {
+        // revert UI
+        setState(() { _messages.removeLast(); });
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to send audio')));
+      }
+    } catch (_) {
+      setState(() { _isRecording = false; });
     }
   }
 
@@ -390,13 +491,33 @@ class _MessagingScreenState extends State<MessagingScreen> {
                                         ),
                                         const SizedBox(height: 2),
                                       ],
-                                      Text(
-                                        message.content,
-                                        style: const TextStyle(
-                                          fontSize: 15,
-                                          color: Color(0xFF111B21),
+                                      if (message.type == MessageType.audioSent || message.type == MessageType.audioReceived) ...[
+                                        Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            IconButton(
+                                              icon: const Icon(Icons.play_arrow),
+                                              onPressed: () async {
+                                                if (message.audioFilePath != null) {
+                                                  try {
+                                                    await _audioPlayer.setFilePath(message.audioFilePath!);
+                                                    await _audioPlayer.play();
+                                                  } catch (_) {}
+                                                }
+                                              },
+                                            ),
+                                            Text(message.content),
+                                          ],
                                         ),
-                                      ),
+                                      ] else ...[
+                                        Text(
+                                          message.content,
+                                          style: const TextStyle(
+                                            fontSize: 15,
+                                            color: Color(0xFF111B21),
+                                          ),
+                                        ),
+                                      ],
                                       const SizedBox(height: 2),
                                       Row(
                                         mainAxisSize: MainAxisSize.min,
@@ -439,6 +560,19 @@ class _MessagingScreenState extends State<MessagingScreen> {
             child: SafeArea(
               child: Row(
                 children: [
+                  // Record button
+                  Container(
+                    decoration: BoxDecoration(
+                      color: _isRecording ? Colors.red : Colors.grey.shade200,
+                      shape: BoxShape.circle,
+                    ),
+                    child: IconButton(
+                      icon: Icon(_isRecording ? Icons.stop : Icons.mic, color: _isRecording ? Colors.white : Colors.black87),
+                      onPressed: _isConnected ? _toggleRecord : null,
+                      tooltip: _isRecording ? 'Stop' : 'Record',
+                    ),
+                  ),
+                  const SizedBox(width: 8),
                   Expanded(
                     child: Container(
                       decoration: BoxDecoration(
@@ -495,6 +629,8 @@ class _MessagingScreenState extends State<MessagingScreen> {
     _messageController.dispose();
     _scrollController.dispose();
     _focusNode.dispose();
+    _audioPlayer.dispose();
+    _recorder.closeRecorder();
     super.dispose();
   }
 }

@@ -377,17 +377,33 @@ class SerialCommunicationService {
           print('Bluetooth: Write characteristic is null!');
           return false;
         }
-        Uint8List bytes = Uint8List.fromList(utf8.encode(data));
-        print('Bluetooth: Sending ${bytes.length} bytes: "$data"');
-        
-        // Use write without response if available (faster), otherwise use write
+        final bytes = Uint8List.fromList(utf8.encode(data));
+        print('Bluetooth: Sending ${bytes.length} bytes');
+        // Chunk only if payload exceeds safe MTU window
         try {
-          if (_writeCharacteristic!.properties.writeWithoutResponse) {
-            await _writeCharacteristic!.write(bytes, withoutResponse: true);
+          const int chunkSize = 180; // conservative under typical MTU ~ 185-247
+          if (bytes.length <= chunkSize) {
+            if (_writeCharacteristic!.properties.writeWithoutResponse) {
+              await _writeCharacteristic!.write(bytes, withoutResponse: true);
+            } else {
+              await _writeCharacteristic!.write(bytes, withoutResponse: false);
+            }
           } else {
-            await _writeCharacteristic!.write(bytes, withoutResponse: false);
+            int offset = 0;
+            while (offset < bytes.length) {
+              final end = (offset + chunkSize > bytes.length) ? bytes.length : offset + chunkSize;
+              final chunk = bytes.sublist(offset, end);
+              if (_writeCharacteristic!.properties.writeWithoutResponse) {
+                await _writeCharacteristic!.write(chunk, withoutResponse: true);
+              } else {
+                await _writeCharacteristic!.write(chunk, withoutResponse: false);
+              }
+              offset = end;
+              // Small pacing only for large transfers
+              await Future.delayed(const Duration(milliseconds: 2));
+            }
           }
-          print('Bluetooth: Message sent successfully');
+          print('Bluetooth: Message sent successfully (chunked)');
           return true;
         } catch (e) {
           print('Bluetooth: Error sending message: $e');
