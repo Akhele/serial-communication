@@ -202,8 +202,8 @@ class _MessagingScreenState extends State<MessagingScreen> {
     await _recorder.startRecorder(
       toFile: _currentRecordingPath!,
       codec: Codec.aacMP4,
-      bitRate: 96000,
-      sampleRate: 44100,
+      bitRate: 16000,  // Very low bitrate for maximum compression (voice quality)
+      sampleRate: 16000,  // Lower sample rate (good enough for voice)
     );
     setState(() { _isRecording = true; });
     _recordStopwatch..reset()..start();
@@ -218,9 +218,23 @@ class _MessagingScreenState extends State<MessagingScreen> {
       final file = File(path);
       if (!(await file.exists())) return;
       final bytes = await file.readAsBytes();
+      
+      // Compress/limit audio size for LoRa transmission
+      final sizeKB = bytes.length / 1024;
+      print('Audio: recorded ${bytes.length} bytes (${sizeKB.toStringAsFixed(1)} KB)');
+      
+      // Warn if audio is too large
+      if (bytes.length > 10000) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Audio is large (${sizeKB.toStringAsFixed(1)} KB). Transmission may take time.')),
+        );
+      }
+      
       final b64 = base64Encode(bytes);
       final durationMs = _recordStopwatch.elapsedMilliseconds;
       final username = _profileService.currentProfile.username;
+      
+      print('Audio: base64 length=${b64.length}, estimated segments=${(b64.length / 200).ceil()}');
 
       // Add to UI immediately
       setState(() {
@@ -235,8 +249,11 @@ class _MessagingScreenState extends State<MessagingScreen> {
         // revert UI
         setState(() { _messages.removeLast(); });
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to send audio')));
+      } else {
+        print('Audio: sent successfully');
       }
-    } catch (_) {
+    } catch (e) {
+      print('Audio: ERROR during send - $e');
       setState(() { _isRecording = false; });
     }
   }

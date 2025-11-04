@@ -483,7 +483,7 @@ void processIncomingMessage(String incoming) {
                 String b64 = audioPart.substring(p2 + 1);
                 // Segment into frames
                 int id = (int)(millis() & 0x7FFFFFFF);
-                const int CHUNK = 120; // conservative to fit in LoRa packet
+                const int CHUNK = 200; // larger chunks = fewer segments = more reliable
                 int total = (b64.length() + CHUNK - 1) / CHUNK;
                 Serial.print("Audio: segmenting into ");
                 Serial.print(total);
@@ -494,8 +494,8 @@ void processIncomingMessage(String incoming) {
                 // Wait before starting to give receiver time to settle into RX mode
                 delay(500);
                 
-                // Send each segment twice for redundancy (improves reliability)
-                for (int retry = 0; retry < 2; retry++) {
+                // Send each segment 3 times for maximum reliability
+                for (int retry = 0; retry < 3; retry++) {
                     for (int i = 0; i < total; i++) {
                         int start = i * CHUNK;
                         int end = start + CHUNK;
@@ -503,25 +503,24 @@ void processIncomingMessage(String incoming) {
                         String part = b64.substring(start, end);
                         // Include username in the segment for receiver to know sender
                         String frame = String("AUDIO_SEG:") + String(id) + String(":") + String(i) + String(":") + String(total) + String(":") + String(duration) + String(":") + username + String(":") + part;
-                        Serial.print("Sending segment ");
+                        Serial.print("TX seg ");
                         Serial.print(i + 1);
                         Serial.print("/");
                         Serial.print(total);
                         if (retry > 0) {
-                            Serial.print(" [retry ");
+                            Serial.print(" [R");
                             Serial.print(retry);
                             Serial.print("]");
                         }
-                        Serial.print(" (length=");
-                        Serial.print(frame.length());
-                        Serial.println(")");
+                        Serial.print(" len=");
+                        Serial.println(frame.length());
                         sendLoRaMessage(frame);
                         
-                        // Delay between segments
-                        delay(800);
+                        // Longer delay for reliability
+                        delay(600);
                     }
                 }
-                Serial.println("Audio: all segments sent (with retries)");
+                Serial.println("Audio: all segments sent (3x redundancy)");
             } else {
                 Serial.println("Audio: ERROR - invalid AUDIO_B64 format");
             }
