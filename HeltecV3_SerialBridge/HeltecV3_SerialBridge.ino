@@ -207,7 +207,7 @@ void loop() {
     // Only call if not already in RX mode or if we just finished TX
     static unsigned long lastRxMode = 0;
     if (millis() - lastRxMode > 1000) {  // Re-enter RX mode every second (handles any issues)
-        Radio.Rx(0);
+    Radio.Rx(0);
         lastRxMode = millis();
     }
     
@@ -329,7 +329,7 @@ void loop() {
                         Serial.print("LoRa Audio: Assembled base64 length=");
                         Serial.println(fullB64.length());
                         // Include username from first segment
-                        String forward = currentAudioUsername + String(":AUDIO_B64:") + String(currentAudioDurationMs) + String(":") + fullB64 + String("\n");
+                        String forward = currentAudioUsername + String(":AUDIO_B64_GZIP:") + String(currentAudioDurationMs) + String(":") + fullB64 + String("\n");
                         Serial.println("LoRa Audio: assembly complete, forwarding to app via USB/BLE");
                         Serial.print("LoRa Audio: Forwarding message length=");
                         Serial.println(forward.length());
@@ -414,7 +414,7 @@ void loop() {
 #endif
         
             // Clear the flag and buffer
-            hasLoRaPacket = false;
+        hasLoRaPacket = false;
             loraRxSize = 0;
             Serial.println("LoRa: Packet processing complete");
         }
@@ -445,9 +445,9 @@ void loop() {
         lastStatus = millis();
     }
     
-    // Minimal delay - Radio.IrqProcess() needs to run very frequently
-    // to catch incoming LoRa packets
-    delayMicroseconds(100);
+    // Small delay - Radio.IrqProcess() needs to run frequently
+    // to catch incoming LoRa packets, but not too fast
+    delay(1);
 }
 
 // Process incoming messages from USB or Bluetooth
@@ -464,8 +464,8 @@ void processIncomingMessage(String incoming) {
     
     // Forward to LoRa if not an AT command
     if (!incoming.startsWith("AT")) {
-        // Check if message contains audio (may have username prefix like "username:AUDIO_B64:...")
-        int audioIdx = incoming.indexOf("AUDIO_B64:");
+        // Check if message contains audio (may have username prefix like "username:AUDIO_B64_GZIP:...")
+        int audioIdx = incoming.indexOf("AUDIO_B64_GZIP:");
         if (audioIdx >= 0) {
             // Segment and send over LoRa
             Serial.println("Segmenting audio for LoRa...");
@@ -474,7 +474,7 @@ void processIncomingMessage(String incoming) {
             if (audioIdx > 0 && incoming.charAt(audioIdx - 1) == ':') {
                 username = incoming.substring(0, audioIdx - 1);
             }
-            // incoming format after username: AUDIO_B64:<durationMs>:<base64>
+            // incoming format after username: AUDIO_B64_GZIP:<durationMs>:<base64-gzipped>
             String audioPart = incoming.substring(audioIdx);
             int p1 = audioPart.indexOf(':');
             int p2 = audioPart.indexOf(':', p1 + 1);

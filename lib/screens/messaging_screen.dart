@@ -11,6 +11,7 @@ import 'package:flutter_sound/flutter_sound.dart';
 import 'dart:io';
 import 'dart:convert';
 import 'package:just_audio/just_audio.dart';
+import 'package:archive/archive.dart';
 
 class MessagingScreen extends StatefulWidget {
   const MessagingScreen({super.key});
@@ -89,22 +90,27 @@ class _MessagingScreenState extends State<MessagingScreen> {
 
       print('App: Parsed - username="$parsedUsername", content length=${parsedContent.length}');
 
-      // Detect audio payload: AUDIO_B64:<durationMs>:<base64>
-      if (parsedContent.startsWith('AUDIO_B64:')) {
-        print('App: Detected AUDIO_B64 payload');
+      // Detect audio payload: AUDIO_B64_GZIP:<durationMs>:<base64-compressed>
+      if (parsedContent.startsWith('AUDIO_B64_GZIP:')) {
+        print('App: Detected AUDIO_B64_GZIP payload');
         try {
-          final rest = parsedContent.substring('AUDIO_B64:'.length);
+          final rest = parsedContent.substring('AUDIO_B64_GZIP:'.length);
           final idx = rest.indexOf(':');
           if (idx < 0) {
-            print('App: ERROR - Missing second colon in AUDIO_B64');
-            throw Exception('Invalid AUDIO_B64 format');
+            print('App: ERROR - Missing second colon in AUDIO_B64_GZIP');
+            throw Exception('Invalid AUDIO_B64_GZIP format');
           }
           final durationMs = int.tryParse(rest.substring(0, idx)) ?? 0;
           final b64 = rest.substring(idx + 1);
-          print('App: Decoding audio - duration=$durationMs ms, base64 length=${b64.length}');
-          final bytes = base64Decode(b64);
-          print('App: Decoded ${bytes.length} bytes, saving to file...');
-          _saveIncomingAudio(bytes).then((path) {
+          print('App: Decoding audio - duration=$durationMs ms, compressed base64 length=${b64.length}');
+          final compressedBytes = base64Decode(b64);
+          print('App: Compressed bytes=${compressedBytes.length}, decompressing...');
+          
+          // Decompress using GZIP
+          final decompressed = GZipDecoder().decodeBytes(compressedBytes);
+          print('App: Decompressed to ${decompressed.length} bytes, saving to file...');
+          
+          _saveIncomingAudio(decompressed).then((path) {
             print('App: Audio saved to $path, adding to messages');
             setState(() {
               _messages.add(ChatMessage.audioReceived(path, durationMs, username: parsedUsername));
@@ -219,22 +225,27 @@ class _MessagingScreenState extends State<MessagingScreen> {
       if (!(await file.exists())) return;
       final bytes = await file.readAsBytes();
       
-      // Compress/limit audio size for LoRa transmission
       final sizeKB = bytes.length / 1024;
       print('Audio: recorded ${bytes.length} bytes (${sizeKB.toStringAsFixed(1)} KB)');
       
-      // Warn if audio is too large
-      if (bytes.length > 10000) {
+      // Compress with GZIP for maximum compression
+      final compressedBytes = GZipEncoder().encode(bytes);
+      final compressedSizeKB = compressedBytes!.length / 1024;
+      final compressionRatio = ((1 - compressedBytes.length / bytes.length) * 100).toStringAsFixed(1);
+      print('Audio: compressed to ${compressedBytes.length} bytes (${compressedSizeKB.toStringAsFixed(1)} KB) - ${compressionRatio}% reduction');
+      
+      // Warn if compressed audio is still large
+      if (compressedBytes.length > 10000) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Audio is large (${sizeKB.toStringAsFixed(1)} KB). Transmission may take time.')),
+          SnackBar(content: Text('Audio: ${compressedSizeKB.toStringAsFixed(1)} KB. Transmission may take time.')),
         );
       }
       
-      final b64 = base64Encode(bytes);
+      final b64 = base64Encode(compressedBytes);
       final durationMs = _recordStopwatch.elapsedMilliseconds;
       final username = _profileService.currentProfile.username;
       
-      print('Audio: base64 length=${b64.length}, estimated segments=${(b64.length / 200).ceil()}');
+      print('Audio: compressed base64 length=${b64.length}, estimated segments=${(b64.length / 200).ceil()}');
 
       // Add to UI immediately
       setState(() {
@@ -242,8 +253,8 @@ class _MessagingScreenState extends State<MessagingScreen> {
       });
       if (_autoScroll) _scrollToBottom();
 
-      // Send as AUDIO_B64
-      final payload = '$username:AUDIO_B64:$durationMs:$b64\n';
+      // Send as AUDIO_B64_GZIP (compressed)
+      final payload = '$username:AUDIO_B64_GZIP:$durationMs:$b64\n';
       final success = await _serialService!.sendData(payload);
       if (!success) {
         // revert UI

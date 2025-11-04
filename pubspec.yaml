@@ -20,6 +20,7 @@ dependencies:
   just_audio: ^0.9.36
   path_provider: ^2.1.4
   flutter_sound: ^9.2.13
+  archive: ^3.6.1
 
 dependency_overrides:
 

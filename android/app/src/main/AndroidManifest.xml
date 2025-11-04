@@ -22,7 +22,7 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     
     <application
-        android:label="serial_communication"
+        android:label="Flutter-LoRa private chat App"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
