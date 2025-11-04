@@ -49,6 +49,10 @@ void processIncomingMessage(String incoming);
 #define BANDWIDTH           0          // 125 kHz
 #define CODING_RATE         1          // 4/5
 
+// Audio transmission settings
+#define AUDIO_REDUNDANCY    1          // Send each segment this many times (1-3) - 1x for max speed
+#define AUDIO_SEGMENT_DELAY 600        // Delay between segments in ms (increase if packets are lost)
+
 // Message buffers
 String rxBuffer = "";
 String inputBuffer = "";
@@ -59,6 +63,7 @@ int currentAudioTotal = 0;
 int currentAudioDurationMs = 0;
 int currentAudioReceived = 0;
 String currentAudioUsername = "";
+bool currentAudioForwarded = false; // Track if we've already forwarded this audio
 const int MAX_AUDIO_SEGMENTS = 64;
 String audioChunks[MAX_AUDIO_SEGMENTS];
 bool audioChunkPresent[MAX_AUDIO_SEGMENTS];
@@ -68,11 +73,16 @@ RadioEvents_t RadioEvents;
 
 // LoRa state
 volatile bool hasLoRaPacket = false;
+volatile bool txDone = false;
 uint8_t loraRxBuffer[256];
 uint16_t loraRxSize = 0;
 
-// Callback prototype
+// Callback prototypes
 void OnRxDone(uint8_t *payload, uint16_t size, int16_t rssi, int8_t snr);
+void OnTxDone(void);
+void OnTxTimeout(void);
+void OnRxTimeout(void);
+void OnRxError(void);
 
 #if ENABLE_BLUETOOTH
 class MyServerCallbacks: public BLEServerCallbacks {
@@ -149,10 +159,28 @@ void setup() {
     
     // Register callbacks
     RadioEvents.RxDone = OnRxDone;
+    RadioEvents.TxDone = OnTxDone;
+    RadioEvents.TxTimeout = OnTxTimeout;
+    RadioEvents.RxTimeout = OnRxTimeout;
+    RadioEvents.RxError = OnRxError;
     
-    // Configure reception
+    // Configure reception with continuous RX mode
+    // Parameters: modem, bandwidth, datarate, coderate, bandwidthAfc, preambleLen, 
+    //             symbTimeout, fixLen, payloadLen, crcOn, freqHopOn, hopPeriod, iqInverted, rxContinuous
     Radio.SetRxConfig(MODEM_LORA, BANDWIDTH, SPREADING_FACTOR,
-                      CODING_RATE, 0, 8, 0, false, 0, true, 0, 0, false, true);
+                      CODING_RATE, 0, 8, 10, false, 0, true, 0, 0, false, true);
+    
+    Serial.println("LoRa RX Config:");
+    Serial.print("  Bandwidth: ");
+    Serial.println(BANDWIDTH);
+    Serial.print("  SF: ");
+    Serial.println(SPREADING_FACTOR);
+    Serial.print("  CR: ");
+    Serial.println(CODING_RATE);
+    
+    // Start in RX mode immediately
+    Radio.Rx(0);
+    Serial.println("LoRa: RX mode started");
     
     Serial.println("System initialized");
     Serial.println("USB Serial: Active");
@@ -202,15 +230,6 @@ void loop() {
     // This triggers OnRxDone callback when LoRa packet arrives
     Radio.IrqProcess();
     
-    // Keep LoRa listening for LoRa-to-LoRa communication
-    // Radio.Rx(0) sets receiver to continuous listening mode
-    // Only call if not already in RX mode or if we just finished TX
-    static unsigned long lastRxMode = 0;
-    if (millis() - lastRxMode > 1000) {  // Re-enter RX mode every second (handles any issues)
-    Radio.Rx(0);
-        lastRxMode = millis();
-    }
-    
     // Handle USB Serial input (from Flutter app)
     if (Serial.available() > 0) {
         String incoming = "";
@@ -231,6 +250,10 @@ void loop() {
     
     // Handle LoRa packets (from other LoRa devices)
     if (hasLoRaPacket) {
+        // IMPORTANT: Clear the flag FIRST to avoid missing new packets during processing
+        hasLoRaPacket = false;
+        
+        unsigned long processStart = millis();
         Serial.println("LoRa: Processing received packet...");
         
         uint16_t copyLen = loraRxSize < sizeof(loraRxBuffer) ? loraRxSize : sizeof(loraRxBuffer);
@@ -241,8 +264,15 @@ void loop() {
             loraMessage += (char)loraRxBuffer[i];
         }
         
-        Serial.print("LoRa: Message received: ");
-        Serial.println(loraMessage);
+        Serial.print("LoRa: Message received (len=");
+        Serial.print(loraMessage.length());
+        Serial.print("): ");
+        // Only print first 50 chars for audio segments to reduce processing time
+        if (loraMessage.startsWith("AUDIO_SEG:") && loraMessage.length() > 50) {
+            Serial.println(loraMessage.substring(0, 50) + "...");
+        } else {
+            Serial.println(loraMessage);
+        }
         
         // Handle audio segmentation frames: AUDIO_SEG:<id>:<index>:<total>:<durationMs>:<username>:<base64>
         if (loraMessage.startsWith("AUDIO_SEG:")) {
@@ -260,15 +290,24 @@ void loop() {
                 String b64chunk = loraMessage.substring(p5 + 1);
                 if (total > 0 && total <= MAX_AUDIO_SEGMENTS && index >= 0 && index < total) {
                     if (currentAudioId != id) {
-                        Serial.print("LoRa Audio: Starting new audio assembly - ID=");
-                        Serial.print(id);
-                        Serial.print(", total=");
-                        Serial.println(total);
+                        String startMsg = String("LoRa Audio: Starting new audio assembly - ID=") + String(id) + String(", total=") + String(total) + String(", username=") + username;
+                        Serial.println(startMsg);
+                        
+                        // Send to BLE so Flutter app knows audio is starting (with username)
+#if ENABLE_BLUETOOTH
+                        if (deviceConnected && pTxCharacteristic != NULL) {
+                            String bleMsg = startMsg + String("\n");
+                            pTxCharacteristic->setValue((uint8_t*)bleMsg.c_str(), bleMsg.length());
+                            pTxCharacteristic->notify();
+                        }
+#endif
+                        
                         currentAudioId = id;
                         currentAudioTotal = total;
                         currentAudioDurationMs = duration;
                         currentAudioUsername = username;
                         currentAudioReceived = 0;
+                        currentAudioForwarded = false; // Reset forwarded flag for new audio
                         for (int i = 0; i < MAX_AUDIO_SEGMENTS; i++) {
                             audioChunks[i] = "";
                             audioChunkPresent[i] = false;
@@ -278,98 +317,86 @@ void loop() {
                         audioChunks[index] = b64chunk;
                         audioChunkPresent[index] = true;
                         currentAudioReceived++;
-                        Serial.print("LoRa Audio: Stored segment ");
-                        Serial.print(index);
-                        Serial.print(" (");
-                        Serial.print(index + 1);
-                        Serial.print("/");
-                        Serial.print(total);
-                        Serial.print("), chunk length=");
-                        Serial.print(b64chunk.length());
-                        Serial.print(", received count=");
-                        Serial.print(currentAudioReceived);
-                        Serial.print("/");
-                        Serial.println(currentAudioTotal);
+                        // Reduced verbosity for faster processing
+                        String progressMsg = String("Audio RX: seg ") + String(index + 1) + String("/") + String(total) + String(" (") + String(currentAudioReceived) + String("/") + String(currentAudioTotal) + String(")");
+                        Serial.println(progressMsg);
+                        
+                        // Send progress to BLE so Flutter app can track it
+#if ENABLE_BLUETOOTH
+                        if (deviceConnected && pTxCharacteristic != NULL) {
+                            String bleMsg = progressMsg + String("\n");
+                            pTxCharacteristic->setValue((uint8_t*)bleMsg.c_str(), bleMsg.length());
+                            pTxCharacteristic->notify();
+                        }
+#endif
                     } else {
-                        Serial.print("LoRa Audio: Duplicate segment ");
-                        Serial.print(index);
-                        Serial.println(" ignored");
+                        Serial.print("Audio RX: dup seg ");
+                        Serial.println(index);
                     }
                     
                     // Check if we have all segments
-                    Serial.print("LoRa Audio: Checking completeness - received=");
-                    Serial.print(currentAudioReceived);
-                    Serial.print(", total=");
-                    Serial.println(currentAudioTotal);
-                    
                     if (currentAudioReceived >= currentAudioTotal) {
-                        Serial.println("LoRa Audio: All segments received! Assembling...");
-                        // Check for missing segments
-                        bool allPresent = true;
-                        for (int i = 0; i < currentAudioTotal; i++) {
-                            if (!audioChunkPresent[i]) {
-                                Serial.print("LoRa Audio: WARNING - Missing segment ");
-                                Serial.println(i);
-                                allPresent = false;
+                        // Check if we've already forwarded this complete audio
+                        if (currentAudioForwarded) {
+                            Serial.println("Audio RX: Complete audio already forwarded, ignoring duplicate segments");
+                        } else {
+                            Serial.println("LoRa Audio: All segments received! Assembling...");
+                            // Check for missing segments
+                            bool allPresent = true;
+                            for (int i = 0; i < currentAudioTotal; i++) {
+                                if (!audioChunkPresent[i]) {
+                                    Serial.print("LoRa Audio: WARNING - Missing segment ");
+                                    Serial.println(i);
+                                    allPresent = false;
+                                }
                             }
-                        }
-                        if (!allPresent) {
-                            Serial.println("LoRa Audio: ERROR - Assembly incomplete, missing segments!");
-                            // Reset and hope for retransmission
-                            currentAudioId = "";
-                            currentAudioTotal = 0;
-                            currentAudioReceived = 0;
-                            return;
-                        }
-                        // Assemble base64
-                        String fullB64 = "";
-                        for (int i = 0; i < currentAudioTotal; i++) {
-                            fullB64 += audioChunks[i];
-                        }
-                        Serial.print("LoRa Audio: Assembled base64 length=");
-                        Serial.println(fullB64.length());
-                        // Include username from first segment
-                        String forward = currentAudioUsername + String(":AUDIO_B64_GZIP:") + String(currentAudioDurationMs) + String(":") + fullB64 + String("\n");
-                        Serial.println("LoRa Audio: assembly complete, forwarding to app via USB/BLE");
-                        Serial.print("LoRa Audio: Forwarding message length=");
-                        Serial.println(forward.length());
-                        // Forward to USB
-                        Serial.print(forward);
-                        // Forward to BLE if connected (chunk for large payloads)
+                            if (!allPresent) {
+                                Serial.println("LoRa Audio: ERROR - Assembly incomplete, missing segments!");
+                                // Don't reset - keep waiting for missing segments from retries
+                            } else {
+                                // Assemble base64
+                                String fullB64 = "";
+                                for (int i = 0; i < currentAudioTotal; i++) {
+                                    fullB64 += audioChunks[i];
+                                }
+                                Serial.print("LoRa Audio: Assembled base64 length=");
+                                Serial.println(fullB64.length());
+                                // Include username from first segment
+                                String forward = currentAudioUsername + String(":AUDIO_B64_GZIP:") + String(currentAudioDurationMs) + String(":") + fullB64 + String("\n");
+                                Serial.println("LoRa Audio: assembly complete, forwarding to app via USB/BLE");
+                                Serial.print("LoRa Audio: Forwarding message length=");
+                                Serial.println(forward.length());
+                                // Forward to USB
+                                Serial.print(forward);
+                                // Forward to BLE if connected (chunk for large payloads)
 #if ENABLE_BLUETOOTH
-                        if (deviceConnected && pTxCharacteristic != NULL) {
-                            // BLE can't send very large payloads in one notify
-                            // Send in chunks
-                            const int BLE_CHUNK = 180;
-                            int offset = 0;
-                            while (offset < forward.length()) {
-                                int end = offset + BLE_CHUNK;
-                                if (end > forward.length()) end = forward.length();
-                                String chunk = forward.substring(offset, end);
-                                pTxCharacteristic->setValue((uint8_t*)chunk.c_str(), chunk.length());
-                                pTxCharacteristic->notify();
-                                offset = end;
-                                delay(10); // small delay between BLE chunks
-                            }
-                            Serial.println("BLE: Audio forwarded in chunks");
-                        }
+                                if (deviceConnected && pTxCharacteristic != NULL) {
+                                    // BLE can't send very large payloads in one notify
+                                    // Send in chunks
+                                    const int BLE_CHUNK = 180;
+                                    int offset = 0;
+                                    while (offset < forward.length()) {
+                                        int end = offset + BLE_CHUNK;
+                                        if (end > forward.length()) end = forward.length();
+                                        String chunk = forward.substring(offset, end);
+                                        pTxCharacteristic->setValue((uint8_t*)chunk.c_str(), chunk.length());
+                                        pTxCharacteristic->notify();
+                                        offset = end;
+                                        delay(10); // small delay between BLE chunks
+                                    }
+                                    Serial.println("BLE: Audio forwarded in chunks");
+                                }
 #endif
-                        // Reset assembly
-                        currentAudioId = "";
-                        currentAudioTotal = 0;
-                        currentAudioDurationMs = 0;
-                        currentAudioUsername = "";
-                        currentAudioReceived = 0;
-                        for (int i = 0; i < MAX_AUDIO_SEGMENTS; i++) {
-                            audioChunks[i] = "";
-                            audioChunkPresent[i] = false;
+                                // Mark as forwarded to prevent duplicate forwarding
+                                currentAudioForwarded = true;
+                                Serial.println("Audio RX: Marked as forwarded, will ignore future duplicate segments");
+                            }
                         }
                     }
                 }
             }
-            hasLoRaPacket = false;
+            // hasLoRaPacket already cleared at start of processing
             loraRxSize = 0;
-            Serial.println("LoRa: Audio segment processed");
         } else {
             // Handle regular text messages
             Serial.print("LoRa: Message length: ");
@@ -413,11 +440,15 @@ void loop() {
         Serial.println("BLE: Disabled in build");
 #endif
         
-            // Clear the flag and buffer
-        hasLoRaPacket = false;
+            // hasLoRaPacket already cleared at start of processing
             loraRxSize = 0;
-            Serial.println("LoRa: Packet processing complete");
         }
+        
+        // Log processing time to identify bottlenecks
+        unsigned long processTime = millis() - processStart;
+        Serial.print("LoRa: Packet processed in ");
+        Serial.print(processTime);
+        Serial.println("ms");
     }
     
 #if ENABLE_BLUETOOTH
@@ -437,11 +468,19 @@ void loop() {
     
     // Periodic status (every 10 seconds) to confirm system is alive
     static unsigned long lastStatus = 0;
+    static unsigned long lastLoRaRx = 0;
+    if (hasLoRaPacket) {
+        lastLoRaRx = millis();
+    }
     if (millis() - lastStatus > 10000) {
         Serial.print("Status: LoRa listening, BLE=");
         Serial.print(deviceConnected ? "connected" : "disconnected");
         Serial.print(", lastLoRaRx=");
-        Serial.println(millis() - lastStatus);
+        Serial.print(millis() - lastLoRaRx);
+        Serial.print("ms ago, hasLoRaPacket=");
+        Serial.print(hasLoRaPacket);
+        Serial.print(", rxSize=");
+        Serial.println(loraRxSize);
         lastStatus = millis();
     }
     
@@ -491,11 +530,22 @@ void processIncomingMessage(String incoming) {
                 Serial.print(b64.length());
                 Serial.println(")");
                 
-                // Wait before starting to give receiver time to settle into RX mode
-                delay(500);
+                // Notify phone that transmission is starting
+#if ENABLE_BLUETOOTH
+                if (deviceConnected && pTxCharacteristic != NULL) {
+                    String startMsg = String("Audio: segmenting into ") + String(total) + String(" chunks\n");
+                    pTxCharacteristic->setValue((uint8_t*)startMsg.c_str(), startMsg.length());
+                    pTxCharacteristic->notify();
+                    delay(50);
+                }
+#endif
                 
-                // Send each segment 3 times for maximum reliability
-                for (int retry = 0; retry < 3; retry++) {
+                // Wait before starting to give receiver time to settle into RX mode
+                delay(300);
+                
+                // Send each segment multiple times for reliability (configurable)
+                // Optimized delays for faster transmission while maintaining reliability
+                for (int retry = 0; retry < AUDIO_REDUNDANCY; retry++) {
                     for (int i = 0; i < total; i++) {
                         int start = i * CHUNK;
                         int end = start + CHUNK;
@@ -503,24 +553,42 @@ void processIncomingMessage(String incoming) {
                         String part = b64.substring(start, end);
                         // Include username in the segment for receiver to know sender
                         String frame = String("AUDIO_SEG:") + String(id) + String(":") + String(i) + String(":") + String(total) + String(":") + String(duration) + String(":") + username + String(":") + part;
-                        Serial.print("TX seg ");
-                        Serial.print(i + 1);
-                        Serial.print("/");
-                        Serial.print(total);
+                        
+                        // Build progress message
+                        String progressMsg = String("TX seg ") + String(i + 1) + String("/") + String(total);
                         if (retry > 0) {
-                            Serial.print(" [R");
-                            Serial.print(retry);
-                            Serial.print("]");
+                            progressMsg += String(" [R") + String(retry) + String("]");
                         }
-                        Serial.print(" len=");
-                        Serial.println(frame.length());
+                        progressMsg += String(" len=") + String(frame.length());
+                        Serial.println(progressMsg);
+                        
+                        // Send progress to BLE BEFORE LoRa transmission (only on first pass)
+#if ENABLE_BLUETOOTH
+                        if (retry == 0 && deviceConnected && pTxCharacteristic != NULL) {
+                            String bleProgress = String("TX seg ") + String(i + 1) + String("/") + String(total) + String(" len=") + String(frame.length()) + String("\n");
+                            pTxCharacteristic->setValue((uint8_t*)bleProgress.c_str(), bleProgress.length());
+                            pTxCharacteristic->notify();
+                            delay(10); // Small delay for BLE
+                        }
+#endif
+                        
                         sendLoRaMessage(frame);
                         
-                        // Longer delay for reliability
-                        delay(600);
+                        // Optimized delay between segments for faster transmission
+                        // Large packets need processing time on receiver side
+                        delay(AUDIO_SEGMENT_DELAY);
+                    }
+                    // Shorter delay between retry passes for faster overall transmission
+                    if (retry < (AUDIO_REDUNDANCY - 1)) {
+                        Serial.print("Retry pass ");
+                        Serial.print(retry + 1);
+                        Serial.println(" complete, waiting before next pass...");
+                        delay(1500);
                     }
                 }
-                Serial.println("Audio: all segments sent (3x redundancy)");
+                Serial.print("Audio: all segments sent (");
+                Serial.print(AUDIO_REDUNDANCY);
+                Serial.println("x redundancy)");
             } else {
                 Serial.println("Audio: ERROR - invalid AUDIO_B64 format");
             }
@@ -546,7 +614,37 @@ void OnRxDone(uint8_t *payload, uint16_t size, int16_t rssi, int8_t snr) {
     loraRxSize = copyLen;
     hasLoRaPacket = true;
     
+    // Log signal quality (brief)
+    Serial.print("LoRa RX: size=");
+    Serial.print(size);
+    Serial.print(", RSSI=");
+    Serial.print(rssi);
+    Serial.print(", SNR=");
+    Serial.println(snr);
+    
     // Detailed logging happens in loop() when processing the packet
+}
+
+// Called when TX is complete
+void OnTxDone(void) {
+    txDone = true;
+    Serial.println("LoRa: TX Done callback");
+}
+
+// Called when TX times out
+void OnTxTimeout(void) {
+    Serial.println("LoRa: TX Timeout!");
+}
+
+// Called when RX times out (no packet received in expected time)
+void OnRxTimeout(void) {
+    // This is normal in continuous RX mode - don't spam the console
+    // Serial.println("LoRa: RX Timeout");
+}
+
+// Called when RX has an error
+void OnRxError(void) {
+    Serial.println("LoRa: RX Error!");
 }
 
 // Process AT commands (optional)
@@ -566,12 +664,59 @@ void processATCommand(String command) {
 #else
         Serial.println("      Bluetooth BLE: Disabled");
 #endif
+    } else if (command == "AT+LORA") {
+        Serial.println("LoRa Configuration:");
+        Serial.print("  Frequency: ");
+        Serial.print(RF_FREQUENCY);
+        Serial.println(" Hz");
+        Serial.print("  TX Power: ");
+        Serial.println(TX_POWER);
+        Serial.print("  Spreading Factor: ");
+        Serial.println(SPREADING_FACTOR);
+        Serial.print("  Bandwidth: ");
+        Serial.print(BANDWIDTH);
+        Serial.println(" (0=125kHz, 1=250kHz, 2=500kHz)");
+        Serial.print("  Coding Rate: ");
+        Serial.print(CODING_RATE);
+        Serial.println(" (1=4/5, 2=4/6, 3=4/7, 4=4/8)");
     } else if (command.startsWith("AT+FREQ=")) {
         String freq = command.substring(8);
         Serial.print("Frequency set to: ");
         Serial.println(freq);
+    } else if (command == "AT+TEST") {
+        Serial.println("Sending test LoRa beacon...");
+        sendLoRaMessage("TEST:BEACON:" + String(millis()));
+    } else if (command == "AT+RXMODE") {
+        Serial.println("Forcing RX mode...");
+        Radio.Rx(0);
+        Serial.println("RX mode activated");
+    } else if (command == "AT+DIAG") {
+        Serial.println("=== Diagnostics ===");
+        Serial.print("hasLoRaPacket: ");
+        Serial.println(hasLoRaPacket);
+        Serial.print("loraRxSize: ");
+        Serial.println(loraRxSize);
+        Serial.print("txDone: ");
+        Serial.println(txDone);
+        Serial.println("Callbacks registered:");
+        Serial.print("  RxDone: ");
+        Serial.println((RadioEvents.RxDone != NULL) ? "YES" : "NO");
+        Serial.print("  TxDone: ");
+        Serial.println((RadioEvents.TxDone != NULL) ? "YES" : "NO");
+        Serial.print("  RxTimeout: ");
+        Serial.println((RadioEvents.RxTimeout != NULL) ? "YES" : "NO");
+        Serial.print("  RxError: ");
+        Serial.println((RadioEvents.RxError != NULL) ? "YES" : "NO");
     } else {
         Serial.println("ERROR: Unknown command");
+        Serial.println("Available commands:");
+        Serial.println("  AT - Test connection");
+        Serial.println("  AT+VERSION - Show version");
+        Serial.println("  AT+INFO - Show system info");
+        Serial.println("  AT+LORA - Show LoRa config");
+        Serial.println("  AT+TEST - Send test beacon");
+        Serial.println("  AT+RXMODE - Force RX mode");
+        Serial.println("  AT+DIAG - Show diagnostics");
     }
 }
 
@@ -585,23 +730,32 @@ void sendLoRaMessage(String message) {
     Serial.print("): ");
     Serial.println(message);
     
-    // Configure TX settings
+    // Configure TX settings (preamble=8, timeout=3000ms)
     Radio.SetTxConfig(MODEM_LORA, TX_POWER, 0, BANDWIDTH,
                       SPREADING_FACTOR, CODING_RATE,
                       8, false, true, 0, 0, false, 3000);
+    
+    // Reset TX done flag
+    txDone = false;
     
     // Send the data
     Radio.Send(data, msgLen);
     Serial.println("LoRa TX: Send command issued");
     
-    // Wait for TX to complete (give it time to transmit)
-    delay(300);
-    Serial.println("LoRa TX: Transmission complete");
+    // Wait for TX to complete using callback flag
+    unsigned long txStart = millis();
+    while (!txDone && (millis() - txStart < 5000)) {
+        Radio.IrqProcess();
+        delay(1);
+    }
     
-    // Re-enable RX mode after transmission
+    if (txDone) {
+        Serial.println("LoRa TX: Transmission complete (confirmed by callback)");
+    } else {
+        Serial.println("LoRa TX: WARNING - No TX Done callback received!");
+    }
+    
+    // CRITICAL: Re-enable RX mode immediately after transmission
     Radio.Rx(0);
     Serial.println("LoRa: RX mode re-enabled after TX");
-    
-    // Extra delay to ensure receiver is ready
-    delay(100);
 }

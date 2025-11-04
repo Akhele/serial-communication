@@ -6,6 +6,9 @@ class ChatMessage {
   final String? username;
   final String? audioFilePath; // if audio message
   final int? audioDurationMs; // duration in ms
+  int? audioSegmentsCurrent; // current segments sent/received
+  int? audioSegmentsTotal; // total segments to send/receive
+  bool audioCompleted; // true when audio is fully sent/received
 
   ChatMessage({
     required this.content,
@@ -15,6 +18,9 @@ class ChatMessage {
     this.username,
     this.audioFilePath,
     this.audioDurationMs,
+    this.audioSegmentsCurrent,
+    this.audioSegmentsTotal,
+    this.audioCompleted = true, // default to true for non-audio messages
   });
 
   factory ChatMessage.sent(String content, {String? username}) {
@@ -36,7 +42,7 @@ class ChatMessage {
     );
   }
 
-  factory ChatMessage.audioSent(String filePath, int durationMs, {String? username}) {
+  factory ChatMessage.audioSent(String filePath, int durationMs, {String? username, int? totalSegments}) {
     return ChatMessage(
       content: '[Voice message] ${(durationMs / 1000).toStringAsFixed(1)}s',
       timestamp: DateTime.now(),
@@ -44,6 +50,9 @@ class ChatMessage {
       username: username,
       audioFilePath: filePath,
       audioDurationMs: durationMs,
+      audioSegmentsCurrent: 0,
+      audioSegmentsTotal: totalSegments,
+      audioCompleted: false, // Will be updated as segments are sent
     );
   }
 
@@ -56,7 +65,32 @@ class ChatMessage {
       username: username,
       audioFilePath: filePath,
       audioDurationMs: durationMs,
+      audioCompleted: true, // Received audio is already complete
     );
+  }
+  
+  // Factory for creating an audio message that's being received (with progress)
+  factory ChatMessage.audioReceiving({String? senderId, String? username, int? totalSegments}) {
+    final displayText = username != null && username.isNotEmpty 
+        ? '[Receiving voice message from $username...]'
+        : '[Receiving voice message...]';
+    return ChatMessage(
+      content: displayText,
+      timestamp: DateTime.now(),
+      type: MessageType.audioReceiving,
+      senderId: senderId,
+      username: username,
+      audioSegmentsCurrent: 0,
+      audioSegmentsTotal: totalSegments,
+      audioCompleted: false,
+    );
+  }
+  
+  double? get audioProgress {
+    if (audioSegmentsTotal == null || audioSegmentsTotal == 0 || audioSegmentsCurrent == null) {
+      return null;
+    }
+    return audioSegmentsCurrent! / audioSegmentsTotal!;
   }
 
   String get formattedTime {
@@ -80,4 +114,5 @@ enum MessageType {
   received,
   audioSent,
   audioReceived,
+  audioReceiving, // Audio being received with progress
 }

@@ -76,6 +76,79 @@ class _MessagingScreenState extends State<MessagingScreen> {
       // Parse received data to extract username if present
       final messageData = data.trim();
       print('App: Received raw data (length=${messageData.length}): "${messageData.substring(0, messageData.length > 100 ? 100 : messageData.length)}..."');
+      
+      // PARSE PROGRESS MESSAGES FROM ARDUINO
+      // TX progress: "TX seg 1/3 len=233" or "TX seg 1/3 [R1] len=233"
+      if (messageData.startsWith('TX seg ')) {
+        print('App: Detected TX progress: $messageData');
+        // Ignore retry messages (they have [R1], [R2], etc.) - only track first pass
+        if (!messageData.contains('[R')) {
+          final match = RegExp(r'TX seg (\d+)/(\d+)').firstMatch(messageData);
+          if (match != null) {
+            final current = int.parse(match.group(1)!);
+            final total = int.parse(match.group(2)!);
+            print('App: Updating TX progress: $current/$total');
+            _updateSendingProgress(current, total);
+          }
+        }
+        return; // Don't process as a message
+      }
+      
+      // RX progress: "Audio RX: seg 1/3 (1/3)"
+      if (messageData.startsWith('Audio RX: seg ')) {
+        print('App: Detected RX progress: $messageData');
+        final match = RegExp(r'Audio RX: seg (\d+)/(\d+)').firstMatch(messageData);
+        if (match != null) {
+          final current = int.parse(match.group(1)!);
+          final total = int.parse(match.group(2)!);
+          print('App: Updating RX progress: $current/$total');
+          _updateReceivingProgress(current, total);
+        }
+        return; // Don't process as a message
+      }
+      
+      // Audio receiving start: "LoRa Audio: Starting new audio assembly"
+      if (messageData.contains('Starting new audio assembly')) {
+        print('App: Detected audio assembly start: $messageData');
+        
+        // Extract username from the message: "username=XXX"
+        String? senderUsername;
+        final usernameMatch = RegExp(r'username=([^,\n]+)').firstMatch(messageData);
+        if (usernameMatch != null) {
+          senderUsername = usernameMatch.group(1)?.trim();
+          print('App: Sender username: $senderUsername');
+        }
+        
+        final totalMatch = RegExp(r'total=(\d+)').firstMatch(messageData);
+        if (totalMatch != null) {
+          final total = int.parse(totalMatch.group(1)!);
+          print('App: Starting audio reception with $total segments');
+          _startReceivingAudio(total, senderUsername);
+          
+          // Show notification immediately when first segment is detected
+          NotificationService.instance.showMessageNotification(
+            title: 'Receiving voice message',
+            body: senderUsername != null && senderUsername.isNotEmpty 
+                ? 'Voice message from $senderUsername'
+                : 'Incoming voice message',
+          );
+        }
+        return;
+      }
+      
+      // Audio sending start: "Audio: segmenting into 3 chunks"
+      if (messageData.startsWith('Audio: segmenting into ')) {
+        print('App: Detected audio segmentation start: $messageData');
+        final match = RegExp(r'segmenting into (\d+) chunks').firstMatch(messageData);
+        if (match != null) {
+          final total = int.parse(match.group(1)!);
+          print('App: Audio will be sent in $total segments');
+          // Initialize the sending progress tracking
+          _initSendingProgress(total);
+        }
+        return;
+      }
+      
       String? parsedUsername;
       String parsedContent = messageData;
 
@@ -111,9 +184,20 @@ class _MessagingScreenState extends State<MessagingScreen> {
           print('App: Decompressed to ${decompressed.length} bytes, saving to file...');
           
           _saveIncomingAudio(decompressed).then((path) {
-            print('App: Audio saved to $path, adding to messages');
+            print('App: Audio saved to $path, updating message');
             setState(() {
-              _messages.add(ChatMessage.audioReceived(path, durationMs, username: parsedUsername));
+              // Find and replace the receiving message with completed audio
+              final receivingIndex = _messages.indexWhere((m) => m.type == MessageType.audioReceiving);
+              if (receivingIndex >= 0) {
+                // Replace the receiving placeholder with completed audio
+                _messages[receivingIndex] = ChatMessage.audioReceived(path, durationMs, username: parsedUsername);
+                // Don't show notification here - already shown when reception started
+              } else {
+                // Fallback: just add it (and show notification since we didn't show one earlier)
+                _messages.add(ChatMessage.audioReceived(path, durationMs, username: parsedUsername));
+                final title = 'New message' + (parsedUsername != null && parsedUsername.isNotEmpty ? ' from $parsedUsername' : '');
+                NotificationService.instance.showMessageNotification(title: title, body: 'Voice message');
+              }
             });
             if (_autoScroll) _scrollToBottom();
           });
@@ -128,13 +212,12 @@ class _MessagingScreenState extends State<MessagingScreen> {
         setState(() {
           _messages.add(ChatMessage.received(parsedContent, username: parsedUsername));
         });
+        
+        // Push local notification for text messages only (audio has its own notification)
+        final title = 'New message' + (parsedUsername != null && parsedUsername.isNotEmpty ? ' from $parsedUsername' : '');
+        NotificationService.instance.showMessageNotification(title: title, body: parsedContent);
       }
 
-      // Push local notification for the received message
-      final title = 'New message' + (parsedUsername != null && parsedUsername.isNotEmpty ? ' from $parsedUsername' : '');
-      // For audio, show generic body
-      final notifBody = parsedContent.startsWith('AUDIO_B64:') ? 'Voice message' : parsedContent;
-      NotificationService.instance.showMessageNotification(title: title, body: notifBody);
       if (_autoScroll) _scrollToBottom();
     });
 
@@ -245,11 +328,11 @@ class _MessagingScreenState extends State<MessagingScreen> {
       final durationMs = _recordStopwatch.elapsedMilliseconds;
       final username = _profileService.currentProfile.username;
       
-      print('Audio: compressed base64 length=${b64.length}, estimated segments=${(b64.length / 200).ceil()}');
+      print('Audio: compressed base64 length=${b64.length}');
 
-      // Add to UI immediately
+      // Add to UI immediately - segments will be set when Arduino confirms
       setState(() {
-        _messages.add(ChatMessage.audioSent(path, durationMs, username: username));
+        _messages.add(ChatMessage.audioSent(path, durationMs, username: username, totalSegments: null));
       });
       if (_autoScroll) _scrollToBottom();
 
@@ -267,6 +350,64 @@ class _MessagingScreenState extends State<MessagingScreen> {
       print('Audio: ERROR during send - $e');
       setState(() { _isRecording = false; });
     }
+  }
+
+  // Start receiving audio - add placeholder message
+  void _startReceivingAudio(int totalSegments, String? username) {
+    setState(() {
+      // Check if we already have a receiving message
+      final existingIndex = _messages.indexWhere((m) => m.type == MessageType.audioReceiving);
+      if (existingIndex < 0) {
+        _messages.add(ChatMessage.audioReceiving(totalSegments: totalSegments, username: username));
+        if (_autoScroll) _scrollToBottom();
+      }
+    });
+  }
+  
+  // Initialize sending progress
+  void _initSendingProgress(int total) {
+    setState(() {
+      // Find the last audio sent message and initialize its total segments
+      for (int i = _messages.length - 1; i >= 0; i--) {
+        if (_messages[i].type == MessageType.audioSent && !_messages[i].audioCompleted) {
+          _messages[i].audioSegmentsTotal = total;
+          _messages[i].audioSegmentsCurrent = 0;
+          print('App: Initialized sending progress with $total segments');
+          break;
+        }
+      }
+    });
+  }
+  
+  // Update sending progress
+  void _updateSendingProgress(int current, int total) {
+    setState(() {
+      // Find the last audio sent message
+      for (int i = _messages.length - 1; i >= 0; i--) {
+        if (_messages[i].type == MessageType.audioSent && !_messages[i].audioCompleted) {
+          _messages[i].audioSegmentsCurrent = current;
+          _messages[i].audioSegmentsTotal = total;
+          if (current >= total) {
+            _messages[i].audioCompleted = true;
+          }
+          break;
+        }
+      }
+    });
+  }
+  
+  // Update receiving progress
+  void _updateReceivingProgress(int current, int total) {
+    setState(() {
+      // Find the audio receiving message
+      for (int i = _messages.length - 1; i >= 0; i--) {
+        if (_messages[i].type == MessageType.audioReceiving) {
+          _messages[i].audioSegmentsCurrent = current;
+          _messages[i].audioSegmentsTotal = total;
+          break;
+        }
+      }
+    });
   }
 
   void _clearMessages() {
@@ -532,22 +673,66 @@ class _MessagingScreenState extends State<MessagingScreen> {
                                         ),
                                         const SizedBox(height: 2),
                                       ],
-                                      if (message.type == MessageType.audioSent || message.type == MessageType.audioReceived) ...[
-                                        Row(
-                                          mainAxisSize: MainAxisSize.min,
+                                      if (message.type == MessageType.audioSent || message.type == MessageType.audioReceived || message.type == MessageType.audioReceiving) ...[
+                                        Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
                                           children: [
-                                            IconButton(
-                                              icon: const Icon(Icons.play_arrow),
-                                              onPressed: () async {
-                                                if (message.audioFilePath != null) {
-                                                  try {
-                                                    await _audioPlayer.setFilePath(message.audioFilePath!);
-                                                    await _audioPlayer.play();
-                                                  } catch (_) {}
-                                                }
-                                              },
+                                            Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                if (message.type != MessageType.audioReceiving)
+                                                  IconButton(
+                                                    icon: const Icon(Icons.play_arrow),
+                                                    onPressed: () async {
+                                                      if (message.audioFilePath != null) {
+                                                        try {
+                                                          await _audioPlayer.setFilePath(message.audioFilePath!);
+                                                          await _audioPlayer.play();
+                                                        } catch (_) {}
+                                                      }
+                                                    },
+                                                  )
+                                                else
+                                                  const Padding(
+                                                    padding: EdgeInsets.all(12.0),
+                                                    child: Icon(Icons.downloading, color: Colors.grey),
+                                                  ),
+                                                Flexible(
+                                                  child: Text(
+                                                    message.content,
+                                                    overflow: TextOverflow.ellipsis,
+                                                  ),
+                                                ),
+                                              ],
                                             ),
-                                            Text(message.content),
+                                            // Progress bar for audio
+                                            if (!message.audioCompleted && message.audioProgress != null) ...[
+                                              const SizedBox(height: 4),
+                                              Container(
+                                                constraints: const BoxConstraints(maxWidth: 200),
+                                                child: Column(
+                                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                                  children: [
+                                                    LinearProgressIndicator(
+                                                      value: message.audioProgress,
+                                                      backgroundColor: Colors.grey[300],
+                                                      valueColor: AlwaysStoppedAnimation<Color>(
+                                                        message.type == MessageType.audioSent ? whatsappGreen : whatsappDarkGreen,
+                                                      ),
+                                                    ),
+                                                    const SizedBox(height: 2),
+                                                    Text(
+                                                      '${(message.audioProgress! * 100).toInt()}%',
+                                                      style: TextStyle(
+                                                        fontSize: 10,
+                                                        color: Colors.grey[600],
+                                                        fontWeight: FontWeight.w500,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                            ],
                                           ],
                                         ),
                                       ] else ...[
