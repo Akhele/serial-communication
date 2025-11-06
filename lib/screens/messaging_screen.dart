@@ -60,6 +60,12 @@ class _MessagingScreenState extends State<MessagingScreen> with SingleTickerProv
   int _estimatedTotalSegments = 0;
   int _currentAnimatedSegment = 0;
 
+  // Device presence tracking
+  DateTime? _lastDeviceBeaconTime;
+  Timer? _devicePresenceTimer;
+  bool _deviceOfflineDialogShown = false;
+  static const Duration _deviceTimeoutDuration = Duration(seconds: 10);
+
   // WhatsApp colors
   static const Color whatsappGreen = Color(0xFF25D366);
   static const Color whatsappDarkGreen = Color(0xFF128C7E);
@@ -78,6 +84,96 @@ class _MessagingScreenState extends State<MessagingScreen> with SingleTickerProv
     _progressAnimationController = AnimationController(
       duration: const Duration(milliseconds: 1000),
       vsync: this,
+    );
+    
+    // Start device presence monitoring if we have a target device
+    if (widget.targetDeviceId != null) {
+      _startDevicePresenceMonitoring();
+    }
+  }
+
+  void _startDevicePresenceMonitoring() {
+    _lastDeviceBeaconTime = DateTime.now(); // Initialize to now
+    
+    // Check device presence every 3 seconds
+    _devicePresenceTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      _checkDevicePresence();
+    });
+  }
+
+  void _checkDevicePresence() {
+    if (_lastDeviceBeaconTime == null || _deviceOfflineDialogShown) return;
+    
+    final timeSinceLastBeacon = DateTime.now().difference(_lastDeviceBeaconTime!);
+    
+    if (timeSinceLastBeacon > _deviceTimeoutDuration) {
+      _showDeviceOfflineDialog();
+    }
+  }
+
+  void _showDeviceOfflineDialog() {
+    if (_deviceOfflineDialogShown || !mounted) return;
+    
+    _deviceOfflineDialogShown = true;
+    
+    final avatarEmoji = widget.targetAvatarId != null 
+        ? Avatars.getById(widget.targetAvatarId!).emoji 
+        : '📱';
+    
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          children: [
+            Text(avatarEmoji, style: const TextStyle(fontSize: 32)),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Text(
+                'Device Disconnected',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '${widget.targetUsername ?? "The device"} is no longer online.',
+              style: const TextStyle(fontSize: 16),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'Go to the radar to find other nearby devices.',
+              style: TextStyle(fontSize: 14, color: Colors.grey),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context); // Close dialog
+              _deviceOfflineDialogShown = false; // Allow showing again
+            },
+            child: const Text('Stay Here'),
+          ),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: whatsappDarkGreen,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () {
+              Navigator.pop(context); // Close dialog
+              Navigator.pop(context); // Go back to radar
+            },
+            icon: const Icon(Icons.radar, size: 20),
+            label: const Text('Go to Radar'),
+          ),
+        ],
+      ),
     );
   }
 
@@ -213,7 +309,19 @@ class _MessagingScreenState extends State<MessagingScreen> with SingleTickerProv
       
       // Filter out LoRa beacon messages (these are for the radar screen only)
       if (messageData.startsWith('LORA_BEACON:')) {
-        print('MessagingScreen: Filtered out beacon message: $messageData');
+        // Check if this beacon is from our target device to track presence
+        if (widget.targetDeviceId != null) {
+          // Expected format: "LORA_BEACON:username:deviceId:avatarId:rssi"
+          final parts = messageData.substring(12).split(':');
+          if (parts.length >= 2) {
+            final deviceId = parts[1];
+            if (deviceId == widget.targetDeviceId) {
+              // Update last seen time for our target device
+              _lastDeviceBeaconTime = DateTime.now();
+              print('MessagingScreen: Updated device presence for ${widget.targetUsername}');
+            }
+          }
+        }
         return; // Don't show beacon messages in chat
       }
       
@@ -1539,6 +1647,7 @@ class _MessagingScreenState extends State<MessagingScreen> with SingleTickerProv
   void dispose() {
     _recordingTimer?.cancel();
     _segmentProgressTimer?.cancel();
+    _devicePresenceTimer?.cancel();
     _progressAnimationController.dispose();
     _messageController.dispose();
     _scrollController.dispose();
