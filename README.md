@@ -500,10 +500,10 @@ copies or substantial portions of the Software.
 
 ## 📞 Support & Contact
 
-- 🐛 **Issues:** [GitHub Issues](https://github.com/yourusername/lora-messenger/issues)
-- 💬 **Discussions:** [GitHub Discussions](https://github.com/yourusername/lora-messenger/discussions)
-- 📧 **Email:** your-email@example.com
-- 🌐 **Website:** https://your-website.com
+- 🐛 **Issues:** [GitHub Issues](https://github.com/akhele/lora-messenger/issues)
+- 💬 **Discussions:** [GitHub Discussions](https://github.com/akhele/lora-messenger/discussions)
+- 📧 **Email:** contact@akhele.com
+- 🌐 **Website:** https://www.akhele.com
 
 ---
 
