@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 import 'screens/configuration_screen.dart';
-import 'screens/messaging_screen.dart';
 import 'screens/radar_screen.dart';
+import 'screens/profile_setup_screen.dart';
+import 'screens/editable_profile_screen.dart';
 import 'services/serial_communication_service.dart';
 import 'providers/serial_service_provider.dart';
-import 'services/profile_service.dart';
+import 'services/profile_manager.dart';
 import 'services/notification_service.dart';
 
 // User profile screen
@@ -13,15 +14,9 @@ class UserProfileScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF128C7E),
-        title: const Text('My Profile', style: TextStyle(color: Colors.white)),
-      ),
-      body: const Center(
-        child: Text('User Profile - Coming Soon'),
-      ),
-    );
+    final serialService = SerialServiceProvider.of(context);
+    
+    return EditableProfileScreen(serialService: serialService);
   }
 }
 
@@ -40,30 +35,16 @@ class MyApp extends StatefulWidget {
 }
 
 class _MyAppState extends State<MyApp> {
-  final ProfileService _profileService = ProfileService();
-  Color _primaryColor = Colors.deepPurple;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadProfile();
-  }
-
-  Future<void> _loadProfile() async {
-    await _profileService.loadProfile();
-    setState(() {
-      _primaryColor = _profileService.currentProfile.primaryColor;
-    });
-  }
+  final SerialCommunicationService _serialService = SerialCommunicationService(); // Create ONCE!
 
   @override
   Widget build(BuildContext context) {
     return SerialServiceProvider(
-      serialService: SerialCommunicationService(),
+      serialService: _serialService, // REUSE the same instance!
       child: MaterialApp(
         title: 'Serial Communication',
         theme: ThemeData(
-          colorScheme: ColorScheme.fromSeed(seedColor: _primaryColor),
+          colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF128C7E)),
           useMaterial3: true,
         ),
         home: const MainNavigationScreen(),
@@ -81,13 +62,81 @@ class MainNavigationScreen extends StatefulWidget {
 
 class _MainNavigationScreenState extends State<MainNavigationScreen> {
   int _currentIndex = 0;
+  bool _profileChecked = false;
+  bool _showingProfileSetup = false;
   
-  final List<Widget> _screens = [
-    const ConfigurationScreen(),
-    const RadarScreen(),
-    const MessagingScreen(),
-    const UserProfileScreen(),
-  ];
+  late final List<Widget> _screens;
+
+  @override
+  void initState() {
+    super.initState();
+    _screens = [
+      ConfigurationScreen(onConnectionSuccess: () async {
+        // Check profile after successful connection
+        await _checkProfileAfterConnection();
+      }),
+      const RadarScreen(),
+      const UserProfileScreen(),
+    ];
+  }
+
+  Future<void> _checkProfileAfterConnection() async {
+    if (_profileChecked || _showingProfileSetup) {
+      print('Profile check skipped: already checked or showing setup');
+      return;
+    }
+    
+    final serialService = SerialServiceProvider.of(context);
+    
+    print('Waiting for connection to stabilize...');
+    // Wait a bit for connection to stabilize
+    await Future.delayed(const Duration(milliseconds: 1500));
+    
+    print('Checking profile on Arduino board...');
+    // Check if profile exists
+    final profile = await ProfileManager.instance.checkProfile(serialService);
+    
+    print('Profile check result: ${profile != null ? "Found profile: $profile" : "No profile found"}');
+    
+    setState(() {
+      _profileChecked = true;
+    });
+    
+    if (profile == null && mounted && !_showingProfileSetup) {
+      // No profile exists, show setup screen
+      print('Showing profile setup screen...');
+      setState(() {
+        _showingProfileSetup = true;
+      });
+      
+      if (mounted) {
+        await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => ProfileSetupScreen(
+              serialService: serialService,
+              onProfileSaved: () {
+                // This will be called from the setup screen
+                print('Profile saved callback triggered');
+              },
+            ),
+          ),
+        );
+        
+        print('Profile setup screen closed');
+        setState(() {
+          _showingProfileSetup = false;
+          _currentIndex = 1; // Navigate to Radar screen after setup
+        });
+      }
+    } else if (profile != null) {
+      // Profile exists, just navigate to Radar
+      print('Navigating to Radar screen...');
+      setState(() {
+        _currentIndex = 1;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -113,10 +162,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
           BottomNavigationBarItem(
             icon: Icon(Icons.radar),
             label: 'Radar',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.message),
-            label: 'Chat',
           ),
           BottomNavigationBarItem(
             icon: Icon(Icons.person),

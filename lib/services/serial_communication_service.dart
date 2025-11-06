@@ -370,18 +370,31 @@ class SerialCommunicationService {
 
   Future<bool> sendData(String data) async {
     try {
-      if (_currentConnectionType == ConnectionType.usb) {
-        if (_port == null) return false;
+      print('sendData: Attempting to send ${data.length} bytes');
+      print('sendData: currentConnectionType = $_currentConnectionType');
+      print('sendData: USB port = ${_port != null ? "connected" : "null"}');
+      print('sendData: BLE write char = ${_writeCharacteristic != null ? "available" : "null"}');
+      
+      // Check USB connection
+      if (_currentConnectionType == ConnectionType.usb || _port != null) {
+        if (_port == null) {
+          print('sendData: USB port is null');
+          return false;
+        }
         Uint8List bytes = Uint8List.fromList(utf8.encode(data));
         await _port!.write(bytes);
+        print('sendData: Sent via USB successfully');
         return true;
-      } else if (_currentConnectionType == ConnectionType.bluetooth) {
+      }
+      
+      // Check Bluetooth connection - check characteristic directly, not just currentConnectionType
+      if (_currentConnectionType == ConnectionType.bluetooth || _writeCharacteristic != null) {
         if (_writeCharacteristic == null) {
-          print('Bluetooth: Write characteristic is null!');
+          print('sendData: Bluetooth write characteristic is null!');
           return false;
         }
         final bytes = Uint8List.fromList(utf8.encode(data));
-        print('Bluetooth: Sending ${bytes.length} bytes');
+        print('sendData: Sending ${bytes.length} bytes via Bluetooth');
         // Chunk only if payload exceeds safe MTU window
         try {
           const int chunkSize = 180; // conservative under typical MTU ~ 185-247
@@ -406,16 +419,18 @@ class SerialCommunicationService {
               await Future.delayed(const Duration(milliseconds: 2));
             }
           }
-          print('Bluetooth: Message sent successfully (chunked)');
+          print('sendData: Bluetooth message sent successfully');
           return true;
         } catch (e) {
-          print('Bluetooth: Error sending message: $e');
+          print('sendData: Bluetooth error: $e');
           return false;
         }
       }
+      
+      print('sendData: No valid connection found!');
       return false;
     } catch (e) {
-      print('Error sending data: $e');
+      print('sendData: Exception: $e');
       return false;
     }
   }

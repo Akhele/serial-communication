@@ -6,7 +6,9 @@ import '../providers/serial_service_provider.dart';
 import 'advanced_configuration_screen.dart';
 
 class ConfigurationScreen extends StatefulWidget {
-  const ConfigurationScreen({super.key});
+  final Future<void> Function()? onConnectionSuccess;
+  
+  const ConfigurationScreen({super.key, this.onConnectionSuccess});
 
   @override
   State<ConfigurationScreen> createState() => _ConfigurationScreenState();
@@ -203,6 +205,11 @@ class _ConfigurationScreenState extends State<ConfigurationScreen> with SingleTi
         const Color(0xFF4CAF50),
         Icons.check_circle,
       );
+      
+      // Navigate to Radar screen after successful connection
+      Future.delayed(const Duration(milliseconds: 500), () async {
+        await widget.onConnectionSuccess?.call();
+      });
     } else {
       _showTopNotification(
         'Failed to connect',

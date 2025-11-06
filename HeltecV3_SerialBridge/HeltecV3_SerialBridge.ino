@@ -18,6 +18,8 @@
 #include "BLEUtils.h"
 #include "BLE2902.h"
 #include "esp_system.h"
+#include <esp_mac.h>
+#include <EEPROM.h>
 
 // Enable/disable Bluetooth (set to false to disable BLE and save resources)
 #define ENABLE_BLUETOOTH true
@@ -71,7 +73,16 @@ bool audioChunkPresent[MAX_AUDIO_SEGMENTS];
 // Beacon broadcasting for radar discovery
 unsigned long lastBeaconTime = 0;
 const unsigned long BEACON_INTERVAL = 5000; // Broadcast every 5 seconds
-String myUsername = "User"; // Default username, will be updated from app
+String myUsername = ""; // Username, loaded from EEPROM or set from app
+int myAvatarId = 0; // Avatar ID, loaded from EEPROM or set from app
+
+// EEPROM addresses for profile storage
+#define EEPROM_SIZE 64
+#define EEPROM_PROFILE_MAGIC 0xAB // Magic byte to check if profile exists
+#define EEPROM_ADDR_MAGIC 0
+#define EEPROM_ADDR_USERNAME_LEN 1
+#define EEPROM_ADDR_USERNAME 2 // Username stored at bytes 2-17 (max 15 chars + null)
+#define EEPROM_ADDR_AVATAR_ID 18 // Avatar ID (1 byte)
 
 // Declare RadioEvents
 RadioEvents_t RadioEvents;
@@ -142,6 +153,85 @@ class MyCallbacks: public BLECharacteristicCallbacks {
 };
 #endif
 
+// ========================================
+// EEPROM Profile Management Functions
+// ========================================
+
+// Check if a profile exists in EEPROM
+bool profileExists() {
+  return EEPROM.read(EEPROM_ADDR_MAGIC) == EEPROM_PROFILE_MAGIC;
+}
+
+// Load profile from EEPROM
+void loadProfile() {
+  if (!profileExists()) {
+    Serial.println("Profile: No saved profile found");
+    myUsername = "";
+    myAvatarId = 0;
+    return;
+  }
+  
+  // Read username length
+  uint8_t usernameLen = EEPROM.read(EEPROM_ADDR_USERNAME_LEN);
+  if (usernameLen > 15) usernameLen = 15; // Safety check
+  
+  // Read username
+  myUsername = "";
+  for (int i = 0; i < usernameLen; i++) {
+    char c = EEPROM.read(EEPROM_ADDR_USERNAME + i);
+    if (c != 0) {
+      myUsername += c;
+    }
+  }
+  
+  // Read avatar ID
+  myAvatarId = EEPROM.read(EEPROM_ADDR_AVATAR_ID);
+  
+  Serial.println("Profile: Loaded from EEPROM");
+  Serial.print("  Username: ");
+  Serial.println(myUsername);
+  Serial.print("  Avatar ID: ");
+  Serial.println(myAvatarId);
+}
+
+// Save profile to EEPROM
+void saveProfile(String username, int avatarId) {
+  Serial.println("Profile: Saving to EEPROM...");
+  
+  // Write magic byte
+  EEPROM.write(EEPROM_ADDR_MAGIC, EEPROM_PROFILE_MAGIC);
+  
+  // Write username length
+  uint8_t usernameLen = username.length();
+  if (usernameLen > 15) usernameLen = 15;
+  EEPROM.write(EEPROM_ADDR_USERNAME_LEN, usernameLen);
+  
+  // Write username
+  for (int i = 0; i < 15; i++) {
+    if (i < usernameLen) {
+      EEPROM.write(EEPROM_ADDR_USERNAME + i, username.charAt(i));
+    } else {
+      EEPROM.write(EEPROM_ADDR_USERNAME + i, 0); // Clear remaining bytes
+    }
+  }
+  
+  // Write avatar ID
+  EEPROM.write(EEPROM_ADDR_AVATAR_ID, avatarId);
+  
+  // Commit changes
+  EEPROM.commit();
+  
+  // Update global variables
+  myUsername = username;
+  myAvatarId = avatarId;
+  
+  Serial.println("Profile: Saved successfully");
+  Serial.print("  Username: ");
+  Serial.println(myUsername);
+  Serial.print("  Avatar ID: ");
+  Serial.println(myAvatarId);
+}
+
 void setup() {
     // Start USB Serial at 115200 baud (matches app default)
     Serial.begin(115200);
@@ -155,6 +245,13 @@ void setup() {
     Serial.println("Ready for bidirectional communication");
     Serial.println("Waiting for messages...");
     Serial.println();
+    
+    // Initialize EEPROM
+    EEPROM.begin(EEPROM_SIZE);
+    Serial.println("EEPROM: Initialized");
+    
+    // Load profile from EEPROM
+    loadProfile();
     
     // Initialize board
     Mcu.begin(HELTEC_BOARD, SLOW_CLK_TPYE);
@@ -280,19 +377,23 @@ void loop() {
             Serial.println(loraMessage);
         }
         
-        // Handle beacon messages: LORA_BEACON:<username>:<deviceId>
+        // Handle beacon messages: LORA_BEACON:<username>:<deviceId>:<avatarId>
         if (loraMessage.startsWith("LORA_BEACON:")) {
             int p1 = loraMessage.indexOf(':', 12);
+            int p2 = -1;
             if (p1 > 0) {
+                p2 = loraMessage.indexOf(':', p1 + 1);
+            }
+            if (p1 > 0 && p2 > p1) {
                 String username = loraMessage.substring(12, p1);
-                String deviceId = loraMessage.substring(p1 + 1);
+                String deviceId = loraMessage.substring(p1 + 1, p2);
+                String avatarId = loraMessage.substring(p2 + 1);
                 
                 // Get RSSI from last received packet (stored in OnRxDone)
-                // We'll need to pass this from the callback
                 extern int16_t lastRssi;
                 
-                // Forward to Flutter app with RSSI
-                String beaconForward = "LORA_BEACON:" + username + ":" + deviceId + ":" + String(lastRssi);
+                // Forward to Flutter app with format: LORA_BEACON:username:deviceId:avatarId:rssi
+                String beaconForward = "LORA_BEACON:" + username + ":" + deviceId + ":" + avatarId + ":" + String(lastRssi);
                 Serial.println(beaconForward);
                 
 #if ENABLE_BLUETOOTH
@@ -520,7 +621,17 @@ void loop() {
     }
     
     // Periodic beacon broadcast for radar discovery
-    if (millis() - lastBeaconTime >= BEACON_INTERVAL) {
+    // Only broadcast when connected to a phone (BLE or USB)
+    bool isConnectedToPhone = false;
+#if ENABLE_BLUETOOTH
+    isConnectedToPhone = deviceConnected; // BLE connection
+#endif
+    // Also check for USB serial connection (if data has been received recently)
+    if (!isConnectedToPhone && Serial.available() > 0) {
+        isConnectedToPhone = true; // USB connection active
+    }
+    
+    if (isConnectedToPhone && millis() - lastBeaconTime >= BEACON_INTERVAL) {
         lastBeaconTime = millis();
         broadcastBeacon();
     }
@@ -530,8 +641,25 @@ void loop() {
     delay(1);
 }
 
-// Process incoming messages from USB or Bluetooth
+// Broadcast beacon to announce this board is online and available to chat
 void broadcastBeacon() {
+    // Only broadcast if connected to a phone
+    bool isConnectedToPhone = false;
+#if ENABLE_BLUETOOTH
+    isConnectedToPhone = deviceConnected;
+#endif
+    
+    if (!isConnectedToPhone) {
+        Serial.println("Beacon: Skipped - not connected to a phone");
+        return;
+    }
+    
+    // Check if username is set
+    if (myUsername.length() == 0) {
+        Serial.println("Beacon: Skipped - username not set");
+        return;
+    }
+    
     String beaconMsg = "LORA_BEACON:" + myUsername;
     
     // Get device ID from ESP32 MAC address
@@ -541,14 +669,39 @@ void broadcastBeacon() {
     sprintf(deviceId, "%02X%02X%02X%02X%02X%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     beaconMsg += ":" + String(deviceId);
     
-    // Transmit beacon over LoRa
+    // Add avatar ID to beacon
+    beaconMsg += ":" + String(myAvatarId);
+    
+    Serial.print("Beacon: Broadcasting - ");
+    Serial.println(beaconMsg);
+    
+    // Transmit beacon over LoRa using the same reliable method as sendLoRaMessage
     Radio.Standby();
     Radio.SetTxConfig(MODEM_LORA, TX_POWER, 0, BANDWIDTH, SPREADING_FACTOR,
                       CODING_RATE, 8, false, true, 0, 0, false, 3000);
+    
+    // Reset TX done flag
+    txDone = false;
+    
+    // Send the beacon
     Radio.Send((uint8_t*)beaconMsg.c_str(), beaconMsg.length());
     
-    Serial.print("Beacon broadcasted: ");
-    Serial.println(beaconMsg);
+    // Wait for TX to complete
+    unsigned long txStart = millis();
+    while (!txDone && (millis() - txStart < 3000)) {
+        Radio.IrqProcess();
+        delay(1);
+    }
+    
+    if (txDone) {
+        Serial.println("Beacon: TX complete");
+    } else {
+        Serial.println("Beacon: TX timeout!");
+    }
+    
+    // CRITICAL: Re-enable RX mode immediately after transmission
+    Radio.Rx(0);
+    Serial.println("Beacon: RX mode re-enabled");
 }
 
 void processIncomingMessage(String incoming) {
@@ -559,12 +712,64 @@ void processIncomingMessage(String incoming) {
         return;
     }
     
-    // Check for username update command
+    // Check for username update command (legacy - for backwards compatibility)
     if (incoming.startsWith("SET_USERNAME:")) {
         myUsername = incoming.substring(13);
         myUsername.trim();
         Serial.print("Username updated to: ");
         Serial.println(myUsername);
+        return;
+    }
+    
+    // Check for GET_PROFILE command
+    if (incoming == "GET_PROFILE") {
+        Serial.println("Profile: GET_PROFILE request received");
+        if (profileExists() && myUsername.length() > 0) {
+            // Send profile back to app
+            String response = "PROFILE:" + myUsername + ":" + String(myAvatarId) + "\n";
+            Serial.print(response);
+#if ENABLE_BLUETOOTH
+            if (deviceConnected && pTxCharacteristic != NULL) {
+                pTxCharacteristic->setValue((uint8_t*)response.c_str(), response.length());
+                pTxCharacteristic->notify();
+            }
+#endif
+        } else {
+            // No profile exists
+            String response = "PROFILE:NONE\n";
+            Serial.print(response);
+#if ENABLE_BLUETOOTH
+            if (deviceConnected && pTxCharacteristic != NULL) {
+                pTxCharacteristic->setValue((uint8_t*)response.c_str(), response.length());
+                pTxCharacteristic->notify();
+            }
+#endif
+        }
+        return;
+    }
+    
+    // Check for SAVE_PROFILE command (format: SAVE_PROFILE:username:avatarId)
+    if (incoming.startsWith("SAVE_PROFILE:")) {
+        Serial.println("Profile: SAVE_PROFILE request received");
+        String data = incoming.substring(13); // Skip "SAVE_PROFILE:"
+        int colonIdx = data.indexOf(':');
+        if (colonIdx > 0) {
+            String username = data.substring(0, colonIdx);
+            int avatarId = data.substring(colonIdx + 1).toInt();
+            saveProfile(username, avatarId);
+            
+            // Send confirmation back to app
+            String response = "PROFILE_SAVED:OK\n";
+            Serial.print(response);
+#if ENABLE_BLUETOOTH
+            if (deviceConnected && pTxCharacteristic != NULL) {
+                pTxCharacteristic->setValue((uint8_t*)response.c_str(), response.length());
+                pTxCharacteristic->notify();
+            }
+#endif
+        } else {
+            Serial.println("Profile: ERROR - Invalid SAVE_PROFILE format");
+        }
         return;
     }
     

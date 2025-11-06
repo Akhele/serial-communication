@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import '../services/serial_communication_service.dart';
 import '../providers/serial_service_provider.dart';
 import '../models/chat_message.dart';
+import '../models/avatar.dart';
 import '../services/profile_service.dart';
 import '../services/notification_service.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -16,8 +17,9 @@ import 'package:archive/archive.dart';
 
 class MessagingScreen extends StatefulWidget {
   final String? targetUsername;
+  final int? targetAvatarId;
   
-  const MessagingScreen({super.key, this.targetUsername});
+  const MessagingScreen({super.key, this.targetUsername, this.targetAvatarId});
 
   @override
   State<MessagingScreen> createState() => _MessagingScreenState();
@@ -83,6 +85,18 @@ class _MessagingScreenState extends State<MessagingScreen> with SingleTickerProv
     super.didChangeDependencies();
     if (_serialService == null) {
       _serialService = SerialServiceProvider.of(context);
+      
+      print('MessagingScreen: Got serial service - Instance: ${_serialService.hashCode}');
+      print('MessagingScreen: isConnected getter = ${_serialService?.isConnected}');
+      print('MessagingScreen: currentConnectionType = ${_serialService?.currentConnectionType}');
+      
+      // WORKAROUND: Force enable the UI while connected (we can receive beacons so we ARE connected)
+      // This is a temporary fix until we figure out why _currentConnectionType is null
+      setState(() {
+        _isConnected = true; // FORCE ENABLE - since you navigated from connected state
+      });
+      print('MessagingScreen: FORCED _isConnected = true (workaround)');
+      
       _setupStreams();
     }
   }
@@ -163,6 +177,12 @@ class _MessagingScreenState extends State<MessagingScreen> with SingleTickerProv
         return;
       }
       
+      // Filter out LoRa beacon messages (these are for the radar screen only)
+      if (messageData.startsWith('LORA_BEACON:')) {
+        print('MessagingScreen: Filtered out beacon message: $messageData');
+        return; // Don't show beacon messages in chat
+      }
+      
       // Filter out Arduino debug/status messages and internal frames
       if (messageData.startsWith('BLE:') || 
           messageData.startsWith('Audio:') ||
@@ -170,6 +190,7 @@ class _MessagingScreenState extends State<MessagingScreen> with SingleTickerProv
           messageData.startsWith('AUDIO_SEG:') ||  // Internal audio segment frames
           messageData.startsWith('TX ') ||  // TX progress messages
           messageData.startsWith('RX ') ||  // RX progress messages
+          messageData.startsWith('Beacon:') ||  // Beacon-related messages
           messageData.contains('len=') ||
           messageData.contains('RSSI=') ||
           messageData.contains('SNR=') ||
@@ -228,8 +249,8 @@ class _MessagingScreenState extends State<MessagingScreen> with SingleTickerProv
               } else {
                 // Fallback: just add it (and show notification since we didn't show one earlier)
                 _messages.add(ChatMessage.audioReceived(path, durationMs, username: parsedUsername));
-                final title = 'New message' + (parsedUsername != null && parsedUsername.isNotEmpty ? ' from $parsedUsername' : '');
-                NotificationService.instance.showMessageNotification(title: title, body: 'Voice message');
+                final displayName = parsedUsername != null && parsedUsername.isNotEmpty ? parsedUsername : 'LoRa Chat';
+                NotificationService.instance.showMessageNotification(title: displayName, body: 'Voice message');
               }
             });
             if (_autoScroll) _scrollToBottom();
@@ -247,14 +268,15 @@ class _MessagingScreenState extends State<MessagingScreen> with SingleTickerProv
         });
         
         // Push local notification for text messages only (audio has its own notification)
-        final title = 'New message' + (parsedUsername != null && parsedUsername.isNotEmpty ? ' from $parsedUsername' : '');
-        NotificationService.instance.showMessageNotification(title: title, body: parsedContent);
+        final displayName = parsedUsername != null && parsedUsername.isNotEmpty ? parsedUsername : 'LoRa Chat';
+        NotificationService.instance.showMessageNotification(title: displayName, body: parsedContent);
       }
 
       if (_autoScroll) _scrollToBottom();
     });
 
     _serialService?.connectionStream.listen((isConnected) {
+      print('MessagingScreen: Connection state changed to $isConnected');
       setState(() {
         _isConnected = isConnected;
       });
@@ -666,17 +688,6 @@ class _MessagingScreenState extends State<MessagingScreen> with SingleTickerProv
     return name.substring(0, 1).toUpperCase();
   }
 
-  Color _getAvatarColor(String name) {
-    final colors = [
-      const Color(0xFF128C7E),
-      const Color(0xFF25D366),
-      const Color(0xFF34B7F1),
-      const Color(0xFF075E54),
-      const Color(0xFF128C7E),
-    ];
-    return colors[name.hashCode.abs() % colors.length];
-  }
-
   bool _shouldShowAvatar(int index) {
     if (index == 0) return true;
     final current = _filteredMessages[index];
@@ -693,22 +704,49 @@ class _MessagingScreenState extends State<MessagingScreen> with SingleTickerProv
       appBar: AppBar(
         backgroundColor: whatsappDarkGreen,
         elevation: 0,
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back, color: Colors.white),
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+        title: Row(
           children: [
-            const Text(
-              'LoRa Chat',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 18,
-                fontWeight: FontWeight.w500,
+            // Avatar in AppBar
+            if (widget.targetAvatarId != null)
+              Container(
+                width: 36,
+                height: 36,
+                margin: const EdgeInsets.only(right: 10),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  shape: BoxShape.circle,
+                ),
+                child: Center(
+                  child: Text(
+                    Avatars.getById(widget.targetAvatarId!).emoji,
+                    style: const TextStyle(fontSize: 20),
+                  ),
+                ),
               ),
-            ),
-            Text(
-              _isConnected ? 'Connected' : 'Disconnected',
-              style: TextStyle(
-                color: Colors.white.withOpacity(0.8),
-                fontSize: 12,
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    widget.targetUsername != null ? widget.targetUsername! : 'LoRa Chat',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  Text(
+                    _isConnected ? 'Connected' : 'Disconnected',
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.8),
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
               ),
             ),
           ],
@@ -819,16 +857,18 @@ class _MessagingScreenState extends State<MessagingScreen> with SingleTickerProv
                                   width: 32,
                                   height: 32,
                                   decoration: BoxDecoration(
-                                    color: _getAvatarColor(message.displayName),
+                                    color: whatsappDarkGreen.withOpacity(0.15),
                                     shape: BoxShape.circle,
                                   ),
                                   child: Center(
                                     child: Text(
-                                      _getInitials(message.displayName),
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.bold,
+                                      widget.targetAvatarId != null 
+                                        ? Avatars.getById(widget.targetAvatarId!).emoji
+                                        : _getInitials(message.displayName),
+                                      style: TextStyle(
+                                        fontSize: widget.targetAvatarId != null ? 18 : 12,
+                                        fontWeight: widget.targetAvatarId != null ? FontWeight.normal : FontWeight.bold,
+                                        color: widget.targetAvatarId != null ? Colors.black : Colors.white,
                                       ),
                                     ),
                                   ),

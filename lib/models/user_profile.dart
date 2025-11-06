@@ -1,64 +1,53 @@
-import 'package:flutter/material.dart';
-
 class UserProfile {
   final String username;
-  final String? displayName;
-  final int primaryColorValue;
-  final DateTime createdAt;
-  DateTime updatedAt;
+  final int avatarId;
 
-  UserProfile({
+  const UserProfile({
     required this.username,
-    this.displayName,
-    required this.primaryColorValue,
-    required this.createdAt,
-    required this.updatedAt,
+    required this.avatarId,
   });
 
+  // Factory constructor for default profile
   factory UserProfile.defaultProfile() {
-    final now = DateTime.now();
-    return UserProfile(
-      username: 'User${now.millisecondsSinceEpoch % 10000}',
-      displayName: 'Serial User',
-      primaryColorValue: 0xFF673AB7, // Deep Purple
-      createdAt: now,
-      updatedAt: now,
+    return const UserProfile(
+      username: 'User',
+      avatarId: 0,
     );
   }
 
+  // Parse from Arduino response: "username:avatarId"
+  factory UserProfile.fromString(String data) {
+    final parts = data.split(':');
+    if (parts.length >= 2) {
+      return UserProfile(
+        username: parts[0],
+        avatarId: int.tryParse(parts[1]) ?? 0,
+      );
+    }
+    return UserProfile(username: 'Unknown', avatarId: 0);
+  }
+
+  // Parse from JSON (for SharedPreferences)
   factory UserProfile.fromJson(Map<String, dynamic> json) {
     return UserProfile(
-      username: json['username'] ?? 'Unknown',
-      displayName: json['displayName'],
-      primaryColorValue: json['primaryColorValue'] ?? 0xFF673AB7,
-      createdAt: DateTime.parse(json['createdAt']),
-      updatedAt: DateTime.parse(json['updatedAt']),
+      username: json['username'] as String? ?? 'User',
+      avatarId: json['avatarId'] as int? ?? 0,
     );
   }
 
+  // Convert to JSON (for SharedPreferences)
   Map<String, dynamic> toJson() {
     return {
       'username': username,
-      'displayName': displayName,
-      'primaryColorValue': primaryColorValue,
-      'createdAt': createdAt.toIso8601String(),
-      'updatedAt': updatedAt.toIso8601String(),
+      'avatarId': avatarId,
     };
   }
 
-  UserProfile copyWith({
-    String? username,
-    String? displayName,
-    int? primaryColorValue,
-  }) {
-    return UserProfile(
-      username: username ?? this.username,
-      displayName: displayName ?? this.displayName,
-      primaryColorValue: primaryColorValue ?? this.primaryColorValue,
-      createdAt: createdAt,
-      updatedAt: DateTime.now(),
-    );
+  // Convert to Arduino command
+  String toCommand() {
+    return 'SAVE_PROFILE:$username:$avatarId';
   }
 
-  Color get primaryColor => Color(primaryColorValue);
+  @override
+  String toString() => 'UserProfile(username: $username, avatarId: $avatarId)';
 }
