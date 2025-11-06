@@ -21,7 +21,7 @@ LoRa Messenger is a complete **offline messaging system** that combines a Flutte
 ### ✨ Key Features
 
 #### 🎨 **Profile System with Avatars**
-- **20 unique emoji avatars** to choose from (🦊🤖👾🐼🚀💎⚡🔥 and more!)
+- **58 unique emoji avatars** to choose from (🦊🤖🏍️🐼🚀💎⚡🔥 and more!)
 - **Persistent storage** - your profile is saved directly on the LoRa board's EEPROM
 - **Auto-setup** - first-time users are guided through profile creation
 - **Editable anytime** - change your username and avatar whenever you want
@@ -198,7 +198,7 @@ flutter run
 ![Profile Creation](images/guide-profile-setup.png)
 
 - Profile setup appears **automatically** on first connection
-- Choose one of **20 emoji avatars** 🦊🤖👾🐼🚀💎⚡🔥
+- Choose one of **58 emoji avatars** 🦊🤖🏍️🐼🚀💎⚡🔥
 - Enter your **username** (max 15 characters)
 - Tap **Save** - profile is stored on the board!
 
@@ -429,20 +429,33 @@ dependencies:
 
 ## 🎨 Avatar Gallery
 
-Choose from **20 unique avatars**:
+Choose from **58 unique avatars** across 8 categories:
 
-| ID | Emoji | Name | ID | Emoji | Name |
-|----|-------|------|----|-------|------|
-| 0 | 😀 | Happy | 10 | 🦄 | Unicorn |
-| 1 | 😎 | Cool | 11 | 🐉 | Dragon |
-| 2 | 🤖 | Robot | 12 | 🦋 | Butterfly |
-| 3 | 👾 | Alien | 13 | 🌟 | Star |
-| 4 | 🦊 | Fox | 14 | ⚡ | Lightning |
-| 5 | 🐼 | Panda | 15 | 🔥 | Fire |
-| 6 | 🦁 | Lion | 16 | 💎 | Diamond |
-| 7 | 🐯 | Tiger | 17 | 🎮 | Gamer |
-| 8 | 🐨 | Koala | 18 | 🎨 | Artist |
-| 9 | 🐸 | Frog | 19 | 🚀 | Rocket |
+### 😊 Faces & Expressions (8)
+😀 😎 🤩 😈 🤠 🥷 👻 💀
+
+### 🦊 Animals (10)
+🦊 🐼 🦁 🐯 🐨 🐸 🦅 🦈 🐺 🦉
+
+### 🦄 Fantasy & Creatures (6)
+🤖 👾 🦄 🐉 🦋 👽
+
+### ✨ Symbols & Elements (7)
+🌟 ⚡ 🔥 💎 ⭐ 💥 ✨
+
+### 🎮 Activities & Hobbies (8)
+🎮 🎨 🎸 🎵 ⚽ 🏀 🎯 🏆
+
+### 🚀 Vehicles & Travel (8)
+🚀 🏍️ 🚁 ✈️ 🚗 🚲 ⛵ 🛸
+
+### 🍕 Food & Drink (5)
+🍕 🍔 🍩 🍦 ☕
+
+### 🌙 Nature & Weather (6)
+🌙 ☀️ 🌊 🌵 🍀 🌺
+
+**All avatars are family-friendly and visually distinct for easy recognition!**
 
 ---
 

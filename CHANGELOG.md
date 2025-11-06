@@ -11,9 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### 🎨 Added - Profile System
 
 - ✨ **Avatar Selection System**
-  - 20 unique emoji avatars to choose from (🦊🤖👾🐼🚀💎⚡🔥 and more!)
-  - Beautiful grid-based avatar picker
+  - 58 unique emoji avatars to choose from (🦊🤖🏍️🐼🚀💎⚡🔥 and more!)
+  - Beautiful grid-based avatar picker across 8 categories
   - Avatar preview in profile setup
+  - All avatars are family-friendly
   
 - 💾 **EEPROM Profile Storage**
   - Persistent profile storage directly on Arduino board
