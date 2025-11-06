@@ -72,7 +72,7 @@ bool audioChunkPresent[MAX_AUDIO_SEGMENTS];
 
 // Beacon broadcasting for radar discovery
 unsigned long lastBeaconTime = 0;
-const unsigned long BEACON_INTERVAL = 5000; // Broadcast every 5 seconds
+const unsigned long BEACON_INTERVAL = 2000; // Broadcast every 2 seconds
 String myUsername = ""; // Username, loaded from EEPROM or set from app
 int myAvatarId = 0; // Avatar ID, loaded from EEPROM or set from app
 

@@ -86,8 +86,8 @@ class _RadarScreenState extends State<RadarScreen> with SingleTickerProviderStat
       vsync: this,
     )..repeat();
 
-    // Cleanup old devices every 5 seconds
-    _cleanupTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+    // Cleanup old devices every 2 seconds
+    _cleanupTimer = Timer.periodic(const Duration(seconds: 2), (_) {
       _cleanupOldDevices();
     });
     

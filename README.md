@@ -305,7 +305,7 @@ The `HeltecV3_SerialBridge.ino` sketch provides:
 - 📶 **Bluetooth BLE** server (Nordic UART service)
 - 🔌 **USB Serial** bridge (115200 baud)
 - 💾 **EEPROM storage** for user profiles
-- 📻 **Beacon broadcasting** every 5 seconds
+- 📻 **Beacon broadcasting** every 2 seconds
 - 🎙️ **Audio segmentation** and reassembly
 - 🔄 **Bidirectional** message relay
 
@@ -410,7 +410,7 @@ dependencies:
 - **LoRa Range:** Up to **1-5 km** (open field), **500m-1km** (urban)
 - **Text Messages:** < 1 second transmission time
 - **Voice Messages:** ~10-30 seconds (depends on length)
-- **Beacon Interval:** Every 5 seconds
+- **Beacon Interval:** Every 2 seconds
 - **Max Message Size:** 255 bytes per LoRa packet
 
 ### Profile Storage
