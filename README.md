@@ -66,6 +66,13 @@ LoRa Messenger is a complete **offline messaging system** that combines a Flutte
 - **Automatic reconnection** and connection status indicators
 - **Top notification banners** for connection status
 
+#### 📡 **Device Presence Detection**
+- **Real-time monitoring** - tracks when users go online/offline
+- **10-second timeout** - detects when a device is no longer reachable
+- **Smart alerts** - shows dialog when the other user disconnects
+- **Quick navigation** - offers "Go to Radar" button to find other users
+- **Avatar display** - shows which user disconnected with their emoji
+
 ---
 
 ## 🎯 Why Use LoRa Messenger?
