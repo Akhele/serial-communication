@@ -6,7 +6,6 @@ import '../providers/serial_service_provider.dart';
 import '../services/profile_service.dart';
 import '../models/avatar.dart';
 import 'messaging_screen.dart';
-import 'profile_screen.dart';
 
 class LoRaDevice {
   final String username;
@@ -169,89 +168,15 @@ class _RadarScreenState extends State<RadarScreen> with SingleTickerProviderStat
     });
   }
 
-  void _showDeviceOptions(LoRaDevice device) {
-    final avatar = Avatars.getById(device.avatarId);
-    
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Row(
-          children: [
-            Container(
-              width: 50,
-              height: 50,
-              decoration: BoxDecoration(
-                color: const Color(0xFF128C7E),
-                shape: BoxShape.circle,
-              ),
-              child: Center(
-                child: Text(
-                  avatar.emoji,
-                  style: const TextStyle(
-                    fontSize: 28,
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    device.username,
-                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                  ),
-                  Text(
-                    'RSSI: ${device.rssi} dBm  •  ~${device.estimatedDistanceMeters}',
-                    style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-                  ),
-                ],
-              ),
-            ),
-          ],
+  void _openChat(LoRaDevice device) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => MessagingScreen(
+          targetUsername: device.username,
+          targetDeviceId: device.deviceId,
+          targetAvatarId: device.avatarId,
         ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.chat, color: Color(0xFF128C7E)),
-              title: const Text('Chat'),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => MessagingScreen(
-                      targetUsername: device.username,
-                      targetAvatarId: device.avatarId,
-                    ),
-                  ),
-                );
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.person, color: Color(0xFF128C7E)),
-              title: const Text('View Profile'),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => ProfileScreen(username: device.username),
-                  ),
-                );
-              },
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-        ],
       ),
     );
   }
@@ -452,7 +377,7 @@ class _RadarScreenState extends State<RadarScreen> with SingleTickerProviderStat
                               ),
                             ),
                           ),
-                          onTap: () => _showDeviceOptions(device),
+                          onTap: () => _openChat(device),
                         );
                       },
                     ),
@@ -501,7 +426,7 @@ class _RadarScreenState extends State<RadarScreen> with SingleTickerProviderStat
     return Transform.translate(
       offset: Offset(x, y),
       child: GestureDetector(
-        onTap: () => _showDeviceOptions(device),
+        onTap: () => _openChat(device),
         child: Container(
           width: 40,
           height: 40,

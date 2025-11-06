@@ -6,6 +6,7 @@ import '../models/chat_message.dart';
 import '../models/avatar.dart';
 import '../services/profile_service.dart';
 import '../services/notification_service.dart';
+import '../services/chat_storage_service.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:flutter_sound/flutter_sound.dart';
@@ -17,9 +18,15 @@ import 'package:archive/archive.dart';
 
 class MessagingScreen extends StatefulWidget {
   final String? targetUsername;
+  final String? targetDeviceId;
   final int? targetAvatarId;
   
-  const MessagingScreen({super.key, this.targetUsername, this.targetAvatarId});
+  const MessagingScreen({
+    super.key, 
+    this.targetUsername, 
+    this.targetDeviceId,
+    this.targetAvatarId,
+  });
 
   @override
   State<MessagingScreen> createState() => _MessagingScreenState();
@@ -64,6 +71,7 @@ class _MessagingScreenState extends State<MessagingScreen> with SingleTickerProv
   void initState() {
     super.initState();
     _loadProfile();
+    _loadConversationHistory();
     _recorder.openRecorder();
     
     // Initialize animation controller for progress value storage
@@ -71,6 +79,28 @@ class _MessagingScreenState extends State<MessagingScreen> with SingleTickerProv
       duration: const Duration(milliseconds: 1000),
       vsync: this,
     );
+  }
+
+  Future<void> _loadConversationHistory() async {
+    if (widget.targetDeviceId != null) {
+      print('MessagingScreen: Loading conversation history for ${widget.targetDeviceId}');
+      final messages = await ChatStorageService.instance.getConversation(widget.targetDeviceId!);
+      print('MessagingScreen: Loaded ${messages.length} messages from storage');
+      setState(() {
+        _messages.clear();
+        _messages.addAll(messages);
+      });
+      if (_autoScroll) _scrollToBottom();
+    } else {
+      print('MessagingScreen: No targetDeviceId provided, skipping history load');
+    }
+  }
+
+  Future<void> _saveMessageToStorage(ChatMessage message) async {
+    if (widget.targetDeviceId != null) {
+      await ChatStorageService.instance.saveMessage(widget.targetDeviceId!, message);
+      print('MessagingScreen: Saved message to storage for ${widget.targetDeviceId}');
+    }
   }
 
   Future<String> _saveIncomingAudio(List<int> bytes) async {
@@ -237,22 +267,25 @@ class _MessagingScreenState extends State<MessagingScreen> with SingleTickerProv
           final decompressed = GZipDecoder().decodeBytes(compressedBytes);
           print('App: Decompressed to ${decompressed.length} bytes, saving to file...');
           
-          _saveIncomingAudio(decompressed).then((path) {
+          _saveIncomingAudio(decompressed).then((path) async {
             print('App: Audio saved to $path, updating message');
+            final audioMessage = ChatMessage.audioReceived(path, durationMs, username: parsedUsername);
             setState(() {
               // Find and replace the receiving message with completed audio
               final receivingIndex = _messages.indexWhere((m) => m.type == MessageType.audioReceiving);
               if (receivingIndex >= 0) {
                 // Replace the receiving placeholder with completed audio
-                _messages[receivingIndex] = ChatMessage.audioReceived(path, durationMs, username: parsedUsername);
+                _messages[receivingIndex] = audioMessage;
                 // Don't show notification here - already shown when reception started
               } else {
                 // Fallback: just add it (and show notification since we didn't show one earlier)
-                _messages.add(ChatMessage.audioReceived(path, durationMs, username: parsedUsername));
+                _messages.add(audioMessage);
                 final displayName = parsedUsername != null && parsedUsername.isNotEmpty ? parsedUsername : 'LoRa Chat';
                 NotificationService.instance.showMessageNotification(title: displayName, body: 'Voice message');
               }
             });
+            // Save to storage
+            await _saveMessageToStorage(audioMessage);
             if (_autoScroll) _scrollToBottom();
           });
         } catch (e) {
@@ -263,9 +296,13 @@ class _MessagingScreenState extends State<MessagingScreen> with SingleTickerProv
         }
       } else {
         print('App: Regular text message');
+        final textMessage = ChatMessage.received(parsedContent, username: parsedUsername);
         setState(() {
-          _messages.add(ChatMessage.received(parsedContent, username: parsedUsername));
+          _messages.add(textMessage);
         });
+        
+        // Save to storage
+        _saveMessageToStorage(textMessage);
         
         // Push local notification for text messages only (audio has its own notification)
         final displayName = parsedUsername != null && parsedUsername.isNotEmpty ? parsedUsername : 'LoRa Chat';
@@ -303,9 +340,12 @@ class _MessagingScreenState extends State<MessagingScreen> with SingleTickerProv
     _messageController.clear();
     _focusNode.unfocus();
 
+    // Create sent message
+    final sentMessage = ChatMessage.sent(messageText, username: username);
+    
     // Add sent message immediately for better UX
     setState(() {
-      _messages.add(ChatMessage.sent(messageText, username: username));
+      _messages.add(sentMessage);
     });
     if (_autoScroll) _scrollToBottom();
 
@@ -320,6 +360,9 @@ class _MessagingScreenState extends State<MessagingScreen> with SingleTickerProv
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Failed to send message')),
       );
+    } else {
+      // Save to storage only if sent successfully
+      await _saveMessageToStorage(sentMessage);
     }
   }
 
@@ -463,9 +506,12 @@ class _MessagingScreenState extends State<MessagingScreen> with SingleTickerProv
       // Calculate estimated segments based on base64 length (200 chars per segment)
       _estimatedTotalSegments = (b64.length / 200).ceil();
       
+      // Create audio message
+      final audioMessage = ChatMessage.audioSent(path, durationMs, username: username, totalSegments: _estimatedTotalSegments);
+      
       // Add to UI immediately
       setState(() {
-        _messages.add(ChatMessage.audioSent(path, durationMs, username: username, totalSegments: _estimatedTotalSegments));
+        _messages.add(audioMessage);
       });
       if (_autoScroll) _scrollToBottom();
       
@@ -481,6 +527,8 @@ class _MessagingScreenState extends State<MessagingScreen> with SingleTickerProv
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to send audio')));
       } else {
         print('Audio: sent successfully');
+        // Save to storage only if sent successfully
+        await _saveMessageToStorage(audioMessage);
       }
     } catch (e) {
       print('Audio: ERROR during send - $e');
