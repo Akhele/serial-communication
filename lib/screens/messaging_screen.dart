@@ -186,11 +186,15 @@ class _MessagingScreenState extends State<MessagingScreen> with SingleTickerProv
           _startReceivingAudio(total, senderUsername);
           
           // Show notification immediately when first segment is detected
+          final avatarEmoji = widget.targetAvatarId != null 
+              ? Avatars.getById(widget.targetAvatarId!).emoji 
+              : null;
           NotificationService.instance.showMessageNotification(
             title: 'Receiving voice message',
             body: senderUsername != null && senderUsername.isNotEmpty 
                 ? 'Voice message from $senderUsername'
                 : 'Incoming voice message',
+            avatarEmoji: avatarEmoji,
           );
         }
         return;
@@ -281,7 +285,14 @@ class _MessagingScreenState extends State<MessagingScreen> with SingleTickerProv
                 // Fallback: just add it (and show notification since we didn't show one earlier)
                 _messages.add(audioMessage);
                 final displayName = parsedUsername != null && parsedUsername.isNotEmpty ? parsedUsername : 'LoRa Chat';
-                NotificationService.instance.showMessageNotification(title: displayName, body: 'Voice message');
+                final avatarEmoji = widget.targetAvatarId != null 
+                    ? Avatars.getById(widget.targetAvatarId!).emoji 
+                    : null;
+                NotificationService.instance.showMessageNotification(
+                  title: displayName, 
+                  body: 'Voice message',
+                  avatarEmoji: avatarEmoji,
+                );
               }
             });
             // Save to storage
@@ -306,7 +317,14 @@ class _MessagingScreenState extends State<MessagingScreen> with SingleTickerProv
         
         // Push local notification for text messages only (audio has its own notification)
         final displayName = parsedUsername != null && parsedUsername.isNotEmpty ? parsedUsername : 'LoRa Chat';
-        NotificationService.instance.showMessageNotification(title: displayName, body: parsedContent);
+        final avatarEmoji = widget.targetAvatarId != null 
+            ? Avatars.getById(widget.targetAvatarId!).emoji 
+            : null;
+        NotificationService.instance.showMessageNotification(
+          title: displayName, 
+          body: parsedContent,
+          avatarEmoji: avatarEmoji,
+        );
       }
 
       if (_autoScroll) _scrollToBottom();

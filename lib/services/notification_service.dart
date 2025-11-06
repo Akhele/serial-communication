@@ -33,13 +33,21 @@ class NotificationService {
     _initialized = true;
   }
 
-  Future<void> showMessageNotification({required String title, required String body}) async {
+  Future<void> showMessageNotification({
+    required String title, 
+    required String body,
+    String? avatarEmoji,
+  }) async {
+    // Create notification with emoji avatar in the title if provided
+    final displayTitle = avatarEmoji != null ? '$avatarEmoji $title' : title;
+    
     const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
       'messages_channel',
       'Messages',
       channelDescription: 'Notifications for incoming messages',
       importance: Importance.high,
       priority: Priority.high,
+      showWhen: true,
     );
     const DarwinNotificationDetails iosDetails = DarwinNotificationDetails();
 
@@ -50,7 +58,7 @@ class NotificationService {
 
     await _plugin.show(
       0,
-      title,
+      displayTitle,
       body,
       platformDetails,
     );
