@@ -1,11 +1,29 @@
 import 'package:flutter/material.dart';
 import 'screens/configuration_screen.dart';
 import 'screens/messaging_screen.dart';
-import 'screens/profile_screen.dart';
+import 'screens/radar_screen.dart';
 import 'services/serial_communication_service.dart';
 import 'providers/serial_service_provider.dart';
 import 'services/profile_service.dart';
 import 'services/notification_service.dart';
+
+// User profile screen
+class UserProfileScreen extends StatelessWidget {
+  const UserProfileScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF128C7E),
+        title: const Text('My Profile', style: TextStyle(color: Colors.white)),
+      ),
+      body: const Center(
+        child: Text('User Profile - Coming Soon'),
+      ),
+    );
+  }
+}
 
 
 Future<void> main() async {
@@ -66,8 +84,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
   
   final List<Widget> _screens = [
     const ConfigurationScreen(),
+    const RadarScreen(),
     const MessagingScreen(),
-    const ProfileScreen(),
+    const UserProfileScreen(),
   ];
 
   @override
@@ -79,6 +98,8 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
       ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,
+        type: BottomNavigationBarType.fixed,
+        selectedItemColor: const Color(0xFF128C7E),
         onTap: (index) {
           setState(() {
             _currentIndex = index;
@@ -87,11 +108,15 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
         items: const [
           BottomNavigationBarItem(
             icon: Icon(Icons.settings),
-            label: 'Configuration',
+            label: 'Config',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.radar),
+            label: 'Radar',
           ),
           BottomNavigationBarItem(
             icon: Icon(Icons.message),
-            label: 'Messaging',
+            label: 'Chat',
           ),
           BottomNavigationBarItem(
             icon: Icon(Icons.person),

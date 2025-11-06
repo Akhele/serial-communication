@@ -68,6 +68,11 @@ const int MAX_AUDIO_SEGMENTS = 64;
 String audioChunks[MAX_AUDIO_SEGMENTS];
 bool audioChunkPresent[MAX_AUDIO_SEGMENTS];
 
+// Beacon broadcasting for radar discovery
+unsigned long lastBeaconTime = 0;
+const unsigned long BEACON_INTERVAL = 5000; // Broadcast every 5 seconds
+String myUsername = "User"; // Default username, will be updated from app
+
 // Declare RadioEvents
 RadioEvents_t RadioEvents;
 
@@ -76,6 +81,7 @@ volatile bool hasLoRaPacket = false;
 volatile bool txDone = false;
 uint8_t loraRxBuffer[256];
 uint16_t loraRxSize = 0;
+int16_t lastRssi = -999; // Store last received packet RSSI
 
 // Callback prototypes
 void OnRxDone(uint8_t *payload, uint16_t size, int16_t rssi, int8_t snr);
@@ -272,6 +278,35 @@ void loop() {
             Serial.println(loraMessage.substring(0, 50) + "...");
         } else {
             Serial.println(loraMessage);
+        }
+        
+        // Handle beacon messages: LORA_BEACON:<username>:<deviceId>
+        if (loraMessage.startsWith("LORA_BEACON:")) {
+            int p1 = loraMessage.indexOf(':', 12);
+            if (p1 > 0) {
+                String username = loraMessage.substring(12, p1);
+                String deviceId = loraMessage.substring(p1 + 1);
+                
+                // Get RSSI from last received packet (stored in OnRxDone)
+                // We'll need to pass this from the callback
+                extern int16_t lastRssi;
+                
+                // Forward to Flutter app with RSSI
+                String beaconForward = "LORA_BEACON:" + username + ":" + deviceId + ":" + String(lastRssi);
+                Serial.println(beaconForward);
+                
+#if ENABLE_BLUETOOTH
+                if (deviceConnected && pTxCharacteristic != NULL) {
+                    String bleMsg = beaconForward + "\n";
+                    pTxCharacteristic->setValue((uint8_t*)bleMsg.c_str(), bleMsg.length());
+                    pTxCharacteristic->notify();
+                    delay(50);
+                }
+#endif
+                // Return to RX mode
+                Radio.Rx(0);
+                return;
+            }
         }
         
         // Handle audio segmentation frames: AUDIO_SEG:<id>:<index>:<total>:<durationMs>:<username>:<base64>
@@ -484,17 +519,59 @@ void loop() {
         lastStatus = millis();
     }
     
+    // Periodic beacon broadcast for radar discovery
+    if (millis() - lastBeaconTime >= BEACON_INTERVAL) {
+        lastBeaconTime = millis();
+        broadcastBeacon();
+    }
+    
     // Small delay - Radio.IrqProcess() needs to run frequently
     // to catch incoming LoRa packets, but not too fast
     delay(1);
 }
 
 // Process incoming messages from USB or Bluetooth
+void broadcastBeacon() {
+    String beaconMsg = "LORA_BEACON:" + myUsername;
+    
+    // Get device ID from ESP32 MAC address
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    char deviceId[13];
+    sprintf(deviceId, "%02X%02X%02X%02X%02X%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    beaconMsg += ":" + String(deviceId);
+    
+    // Transmit beacon over LoRa
+    Radio.Standby();
+    Radio.SetTxConfig(MODEM_LORA, TX_POWER, 0, BANDWIDTH, SPREADING_FACTOR,
+                      CODING_RATE, 8, false, true, 0, 0, false, 3000);
+    Radio.Send((uint8_t*)beaconMsg.c_str(), beaconMsg.length());
+    
+    Serial.print("Beacon broadcasted: ");
+    Serial.println(beaconMsg);
+}
+
 void processIncomingMessage(String incoming) {
     // Trim only whitespace, keep the actual message content
     incoming.trim();
     
     if (incoming.length() == 0) {
+        return;
+    }
+    
+    // Check for username update command
+    if (incoming.startsWith("SET_USERNAME:")) {
+        myUsername = incoming.substring(13);
+        myUsername.trim();
+        Serial.print("Username updated to: ");
+        Serial.println(myUsername);
+        return;
+    }
+    
+    // Check for scan request
+    if (incoming == "LORA_SCAN") {
+        Serial.println("Scanning for nearby LoRa devices...");
+        broadcastBeacon(); // Broadcast immediately when requested
         return;
     }
     
@@ -536,12 +613,13 @@ void processIncomingMessage(String incoming) {
                     String startMsg = String("Audio: segmenting into ") + String(total) + String(" chunks\n");
                     pTxCharacteristic->setValue((uint8_t*)startMsg.c_str(), startMsg.length());
                     pTxCharacteristic->notify();
-                    delay(50);
+                    delay(100); // Increased delay to ensure BLE transmission completes
                 }
 #endif
                 
                 // Wait before starting to give receiver time to settle into RX mode
-                delay(300);
+                // Also gives Flutter app time to process init message and update UI
+                delay(600); // Increased from 300ms to give Flutter time to render before segments arrive
                 
                 // Send each segment multiple times for reliability (configurable)
                 // Optimized delays for faster transmission while maintaining reliability
@@ -568,7 +646,9 @@ void processIncomingMessage(String incoming) {
                             String bleProgress = String("TX seg ") + String(i + 1) + String("/") + String(total) + String(" len=") + String(frame.length()) + String("\n");
                             pTxCharacteristic->setValue((uint8_t*)bleProgress.c_str(), bleProgress.length());
                             pTxCharacteristic->notify();
-                            delay(10); // Small delay for BLE
+                            Serial.print("BLE: Sent progress - ");
+                            Serial.println(bleProgress);
+                            delay(300); // Increased delay to 300ms to give Flutter time to render each percentage update
                         }
 #endif
                         
@@ -612,6 +692,7 @@ void OnRxDone(uint8_t *payload, uint16_t size, int16_t rssi, int8_t snr) {
     uint16_t copyLen = size < sizeof(loraRxBuffer) ? size : sizeof(loraRxBuffer);
     memcpy(loraRxBuffer, payload, copyLen);
     loraRxSize = copyLen;
+    lastRssi = rssi; // Store RSSI for beacon forwarding
     hasLoRaPacket = true;
     
     // Log signal quality (brief)

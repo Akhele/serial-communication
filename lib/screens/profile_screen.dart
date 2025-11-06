@@ -1,401 +1,225 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import '../models/user_profile.dart';
-import '../services/profile_service.dart';
+import '../services/serial_communication_service.dart';
+import '../providers/serial_service_provider.dart';
+import 'dart:async';
 
 class ProfileScreen extends StatefulWidget {
-  const ProfileScreen({super.key});
+  final String username;
+
+  const ProfileScreen({Key? key, required this.username}) : super(key: key);
 
   @override
   State<ProfileScreen> createState() => _ProfileScreenState();
 }
 
 class _ProfileScreenState extends State<ProfileScreen> {
-  final ProfileService _profileService = ProfileService();
-  final TextEditingController _usernameController = TextEditingController();
-  final TextEditingController _displayNameController = TextEditingController();
-  
-  UserProfile? _currentProfile;
-  bool _isLoading = true;
-  bool _hasChanges = false;
-
-  final List<Color> _predefinedColors = [
-    Colors.deepPurple,
-    Colors.blue,
-    Colors.green,
-    Colors.orange,
-    Colors.red,
-    Colors.pink,
-    Colors.teal,
-    Colors.indigo,
-    Colors.cyan,
-    Colors.amber,
-  ];
+  SerialCommunicationService? _serialService;
+  String? _status;
+  String? _location;
+  int? _rssi;
+  StreamSubscription? _dataSubscription;
 
   @override
   void initState() {
     super.initState();
-    _loadProfile();
-  }
-
-  Future<void> _loadProfile() async {
-    await _profileService.loadProfile();
-    setState(() {
-      _currentProfile = _profileService.currentProfile;
-      _usernameController.text = _currentProfile!.username;
-      _displayNameController.text = _currentProfile!.displayName ?? '';
-      _isLoading = false;
-    });
-  }
-
-  void _markAsChanged() {
-    if (!_hasChanges) {
-      setState(() {
-        _hasChanges = true;
-      });
-    }
-  }
-
-  Future<void> _saveProfile() async {
-    if (_currentProfile == null) return;
-
-    final updatedProfile = _currentProfile!.copyWith(
-      username: _usernameController.text.trim(),
-      displayName: _displayNameController.text.trim().isEmpty 
-          ? null 
-          : _displayNameController.text.trim(),
-    );
-
-    await _profileService.updateProfile(updatedProfile);
-    setState(() {
-      _currentProfile = updatedProfile;
-      _hasChanges = false;
-    });
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Profile saved successfully!')),
-    );
-  }
-
-  void _changeColor(Color newColor) {
-    if (_currentProfile == null) return;
-
-    final updatedProfile = _currentProfile!.copyWith(
-      primaryColorValue: newColor.value,
-    );
-
-    setState(() {
-      _currentProfile = updatedProfile;
-      _hasChanges = true;
-    });
-  }
-
-  Future<void> _resetProfile() async {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Reset Profile'),
-        content: const Text('Are you sure you want to reset your profile to default settings? This action cannot be undone.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () async {
-              Navigator.of(context).pop();
-              await _profileService.resetProfile();
-              await _loadProfile();
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Profile reset to defaults')),
-              );
-            },
-            child: const Text('Reset'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _copyUsername() {
-    Clipboard.setData(ClipboardData(text: _currentProfile?.username ?? ''));
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Username copied to clipboard')),
-    );
   }
 
   @override
-  Widget build(BuildContext context) {
-    if (_isLoading) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_serialService == null) {
+      _serialService = SerialServiceProvider.of(context);
+      _requestProfile();
+      _setupProfileStream();
     }
+  }
 
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: _currentProfile!.primaryColor,
-        foregroundColor: Colors.white,
-        title: const Text('Profile & Settings'),
-        actions: [
-          if (_hasChanges)
-            TextButton(
-              onPressed: _saveProfile,
-              child: const Text(
-                'Save',
-                style: TextStyle(color: Colors.white),
-              ),
-            ),
-        ],
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // Profile Header
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(20.0),
-                child: Column(
-                  children: [
-                    CircleAvatar(
-                      radius: 40,
-                      backgroundColor: _currentProfile!.primaryColor,
-                      child: Text(
-                        (_currentProfile!.displayName ?? _currentProfile!.username)
-                            .substring(0, 1)
-                            .toUpperCase(),
-                        style: const TextStyle(
-                          fontSize: 32,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      _currentProfile!.displayName ?? _currentProfile!.username,
-                      style: const TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '@${_currentProfile!.username}',
-                      style: TextStyle(
-                        fontSize: 16,
-                        color: Colors.grey[600],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
+  void _setupProfileStream() {
+    _dataSubscription = _serialService?.dataStream.listen((message) {
+      _parseProfileMessage(message.trim());
+    });
+  }
 
-            // Username Section
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        const Text(
-                          'Username',
-                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                        ),
-                        const Spacer(),
-                        IconButton(
-                          icon: const Icon(Icons.copy),
-                          onPressed: _copyUsername,
-                          tooltip: 'Copy Username',
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    TextField(
-                      controller: _usernameController,
-                      decoration: const InputDecoration(
-                        hintText: 'Enter your username',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.person),
-                      ),
-                      onChanged: (_) => _markAsChanged(),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'This username will be sent with your messages',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.grey[600],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
+  void _parseProfileMessage(String message) {
+    // Expected format: "PROFILE:username:status:location:rssi"
+    if (message.startsWith('PROFILE:')) {
+      final parts = message.substring(8).split(':');
+      if (parts.length >= 4 && parts[0] == widget.username) {
+        setState(() {
+          _status = parts[1].isNotEmpty ? parts[1] : null;
+          _location = parts[2].isNotEmpty ? parts[2] : null;
+          _rssi = int.tryParse(parts[3]);
+        });
+      }
+    }
+  }
 
-            // Display Name Section
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Display Name',
-                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 8),
-                    TextField(
-                      controller: _displayNameController,
-                      decoration: const InputDecoration(
-                        hintText: 'Enter your display name (optional)',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.badge),
-                      ),
-                      onChanged: (_) => _markAsChanged(),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'This is how your name appears in the app',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.grey[600],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-
-            // App Color Section
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'App Color Theme',
-                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Choose your preferred app color',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.grey[600],
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Wrap(
-                      spacing: 12,
-                      runSpacing: 12,
-                      children: _predefinedColors.map((color) {
-                        final isSelected = _currentProfile!.primaryColorValue == color.value;
-                        return GestureDetector(
-                          onTap: () => _changeColor(color),
-                          child: Container(
-                            width: 50,
-                            height: 50,
-                            decoration: BoxDecoration(
-                              color: color,
-                              shape: BoxShape.circle,
-                              border: Border.all(
-                                color: isSelected ? Colors.black : Colors.transparent,
-                                width: 3,
-                              ),
-                            ),
-                            child: isSelected
-                                ? const Icon(
-                                    Icons.check,
-                                    color: Colors.white,
-                                    size: 24,
-                                  )
-                                : null,
-                          ),
-                        );
-                      }).toList(),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-
-            // Profile Actions
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const Text(
-                      'Profile Actions',
-                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 16),
-                    ElevatedButton.icon(
-                      onPressed: _hasChanges ? _saveProfile : null,
-                      icon: const Icon(Icons.save),
-                      label: const Text('Save Changes'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: _currentProfile!.primaryColor,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    OutlinedButton.icon(
-                      onPressed: _resetProfile,
-                      icon: const Icon(Icons.refresh),
-                      label: const Text('Reset to Defaults'),
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-
-            // Profile Info
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Profile Information',
-                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 8),
-                    Text('Created: ${_currentProfile!.createdAt.toString().split(' ')[0]}'),
-                    Text('Last Updated: ${_currentProfile!.updatedAt.toString().split(' ')[0]}'),
-                    Text('Profile ID: ${_currentProfile!.username}'),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
+  void _requestProfile() {
+    _serialService?.sendData('GET_PROFILE:${widget.username}\n');
   }
 
   @override
   void dispose() {
-    _usernameController.dispose();
-    _displayNameController.dispose();
+    _dataSubscription?.cancel();
     super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF0F2F5),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF128C7E),
+        elevation: 0,
+        title: const Text('Profile', style: TextStyle(color: Colors.white)),
+      ),
+      body: Column(
+        children: [
+          // Header with avatar
+          Container(
+            width: double.infinity,
+            decoration: const BoxDecoration(
+              color: Color(0xFF128C7E),
+              borderRadius: BorderRadius.only(
+                bottomLeft: Radius.circular(32),
+                bottomRight: Radius.circular(32),
+              ),
+            ),
+            padding: const EdgeInsets.only(bottom: 40),
+            child: Column(
+              children: [
+                const SizedBox(height: 20),
+                Container(
+                  width: 100,
+                  height: 100,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.2),
+                        blurRadius: 10,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Center(
+                    child: Text(
+                      widget.username.isNotEmpty ? widget.username[0].toUpperCase() : '?',
+                      style: const TextStyle(
+                        fontSize: 40,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF128C7E),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  widget.username,
+                  style: const TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 16),
+
+          // Profile Information
+          Expanded(
+            child: ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                _buildInfoCard(
+                  'Status',
+                  _status ?? 'No status set',
+                  Icons.info_outline,
+                ),
+                const SizedBox(height: 12),
+                _buildInfoCard(
+                  'Location',
+                  _location ?? 'Unknown',
+                  Icons.location_on_outlined,
+                ),
+                const SizedBox(height: 12),
+                _buildInfoCard(
+                  'Signal Strength',
+                  _rssi != null ? '$_rssi dBm' : 'Unknown',
+                  Icons.signal_cellular_alt,
+                  color: _getRssiColor(_rssi),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInfoCard(String label, String value, IconData icon, {Color? color}) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 48,
+            height: 48,
+            decoration: BoxDecoration(
+              color: (color ?? const Color(0xFF128C7E)).withOpacity(0.1),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(icon, color: color ?? const Color(0xFF128C7E)),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey[600],
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  value,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF111B21),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Color _getRssiColor(int? rssi) {
+    if (rssi == null) return Colors.grey;
+    if (rssi > -60) return const Color(0xFF00FF88);
+    if (rssi > -80) return const Color(0xFF00D9FF);
+    if (rssi > -100) return const Color(0xFFFFAA00);
+    return const Color(0xFFFF4444);
   }
 }

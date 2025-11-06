@@ -47,6 +47,71 @@ class _ConfigurationScreenState extends State<ConfigurationScreen> with SingleTi
     _selectedConnectionType = ConnectionType.bluetooth;
   }
 
+  void _showTopNotification(String message, Color backgroundColor, IconData icon) {
+    final overlay = Overlay.of(context);
+    late OverlayEntry overlayEntry;
+    
+    overlayEntry = OverlayEntry(
+      builder: (context) => Positioned(
+        top: MediaQuery.of(context).padding.top + 10,
+        left: 16,
+        right: 16,
+        child: Material(
+          color: Colors.transparent,
+          child: TweenAnimationBuilder<double>(
+            tween: Tween(begin: 0.0, end: 1.0),
+            duration: const Duration(milliseconds: 300),
+            builder: (context, value, child) {
+              return Transform.translate(
+                offset: Offset(0, -50 * (1 - value)),
+                child: Opacity(
+                  opacity: value,
+                  child: child,
+                ),
+              );
+            },
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: backgroundColor,
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.2),
+                    blurRadius: 8,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
+              ),
+              child: Row(
+                children: [
+                  Icon(icon, color: Colors.white, size: 24),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      message,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    
+    overlay.insert(overlayEntry);
+    
+    Future.delayed(const Duration(seconds: 3), () {
+      overlayEntry.remove();
+    });
+  }
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -133,12 +198,16 @@ class _ConfigurationScreenState extends State<ConfigurationScreen> with SingleTi
     }
 
     if (success) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Connected successfully!')),
+      _showTopNotification(
+        'Board connected successfully!',
+        const Color(0xFF4CAF50),
+        Icons.check_circle,
       );
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Failed to connect')),
+      _showTopNotification(
+        'Failed to connect',
+        const Color(0xFFF44336),
+        Icons.error,
       );
     }
   }
@@ -146,8 +215,10 @@ class _ConfigurationScreenState extends State<ConfigurationScreen> with SingleTi
   Future<void> _disconnect() async {
     if (_serialService == null) return;
     await _serialService!.disconnect();
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Disconnected')),
+    _showTopNotification(
+      'Disconnected',
+      const Color(0xFF757575),
+      Icons.bluetooth_disabled,
     );
   }
 

@@ -10,17 +10,20 @@ import 'package:path_provider/path_provider.dart';
 import 'package:flutter_sound/flutter_sound.dart';
 import 'dart:io';
 import 'dart:convert';
+import 'dart:async';
 import 'package:just_audio/just_audio.dart';
 import 'package:archive/archive.dart';
 
 class MessagingScreen extends StatefulWidget {
-  const MessagingScreen({super.key});
+  final String? targetUsername;
+  
+  const MessagingScreen({super.key, this.targetUsername});
 
   @override
   State<MessagingScreen> createState() => _MessagingScreenState();
 }
 
-class _MessagingScreenState extends State<MessagingScreen> {
+class _MessagingScreenState extends State<MessagingScreen> with SingleTickerProviderStateMixin {
   SerialCommunicationService? _serialService;
   final ProfileService _profileService = ProfileService();
   final TextEditingController _messageController = TextEditingController();
@@ -36,6 +39,17 @@ class _MessagingScreenState extends State<MessagingScreen> {
   final AudioPlayer _audioPlayer = AudioPlayer();
   String? _currentRecordingPath;
   Stopwatch _recordStopwatch = Stopwatch();
+  Timer? _recordingTimer;
+  String _recordingDuration = '0:00.0';
+  double _recordingSwipeOffset = 0.0;
+  bool _recordingCancelled = false;
+  double _recordingStartX = 0.0;
+  
+  // Animation for smooth progress bar updates
+  late AnimationController _progressAnimationController;
+  Timer? _segmentProgressTimer;
+  int _estimatedTotalSegments = 0;
+  int _currentAnimatedSegment = 0;
 
   // WhatsApp colors
   static const Color whatsappGreen = Color(0xFF25D366);
@@ -49,6 +63,12 @@ class _MessagingScreenState extends State<MessagingScreen> {
     super.initState();
     _loadProfile();
     _recorder.openRecorder();
+    
+    // Initialize animation controller for progress value storage
+    _progressAnimationController = AnimationController(
+      duration: const Duration(milliseconds: 1000),
+      vsync: this,
+    );
   }
 
   Future<String> _saveIncomingAudio(List<int> bytes) async {
@@ -69,25 +89,27 @@ class _MessagingScreenState extends State<MessagingScreen> {
 
   Future<void> _loadProfile() async {
     await _profileService.loadProfile();
+    // Send username to Arduino for beacon broadcasting
+    if (_serialService != null) {
+      final username = _profileService.currentProfile.username;
+      await _serialService!.sendData('SET_USERNAME:$username\n');
+    }
   }
 
   void _setupStreams() {
     _serialService?.dataStream.listen((data) {
       // Parse received data to extract username if present
       final messageData = data.trim();
-      print('App: Received raw data (length=${messageData.length}): "${messageData.substring(0, messageData.length > 100 ? 100 : messageData.length)}..."');
       
       // PARSE PROGRESS MESSAGES FROM ARDUINO
       // TX progress: "TX seg 1/3 len=233" or "TX seg 1/3 [R1] len=233"
       if (messageData.startsWith('TX seg ')) {
-        print('App: Detected TX progress: $messageData');
         // Ignore retry messages (they have [R1], [R2], etc.) - only track first pass
         if (!messageData.contains('[R')) {
           final match = RegExp(r'TX seg (\d+)/(\d+)').firstMatch(messageData);
           if (match != null) {
             final current = int.parse(match.group(1)!);
             final total = int.parse(match.group(2)!);
-            print('App: Updating TX progress: $current/$total');
             _updateSendingProgress(current, total);
           }
         }
@@ -96,12 +118,10 @@ class _MessagingScreenState extends State<MessagingScreen> {
       
       // RX progress: "Audio RX: seg 1/3 (1/3)"
       if (messageData.startsWith('Audio RX: seg ')) {
-        print('App: Detected RX progress: $messageData');
         final match = RegExp(r'Audio RX: seg (\d+)/(\d+)').firstMatch(messageData);
         if (match != null) {
           final current = int.parse(match.group(1)!);
           final total = int.parse(match.group(2)!);
-          print('App: Updating RX progress: $current/$total');
           _updateReceivingProgress(current, total);
         }
         return; // Don't process as a message
@@ -109,20 +129,16 @@ class _MessagingScreenState extends State<MessagingScreen> {
       
       // Audio receiving start: "LoRa Audio: Starting new audio assembly"
       if (messageData.contains('Starting new audio assembly')) {
-        print('App: Detected audio assembly start: $messageData');
-        
         // Extract username from the message: "username=XXX"
         String? senderUsername;
         final usernameMatch = RegExp(r'username=([^,\n]+)').firstMatch(messageData);
         if (usernameMatch != null) {
           senderUsername = usernameMatch.group(1)?.trim();
-          print('App: Sender username: $senderUsername');
         }
         
         final totalMatch = RegExp(r'total=(\d+)').firstMatch(messageData);
         if (totalMatch != null) {
           final total = int.parse(totalMatch.group(1)!);
-          print('App: Starting audio reception with $total segments');
           _startReceivingAudio(total, senderUsername);
           
           // Show notification immediately when first segment is detected
@@ -138,15 +154,32 @@ class _MessagingScreenState extends State<MessagingScreen> {
       
       // Audio sending start: "Audio: segmenting into 3 chunks"
       if (messageData.startsWith('Audio: segmenting into ')) {
-        print('App: Detected audio segmentation start: $messageData');
         final match = RegExp(r'segmenting into (\d+) chunks').firstMatch(messageData);
         if (match != null) {
           final total = int.parse(match.group(1)!);
-          print('App: Audio will be sent in $total segments');
           // Initialize the sending progress tracking
           _initSendingProgress(total);
         }
         return;
+      }
+      
+      // Filter out Arduino debug/status messages and internal frames
+      if (messageData.startsWith('BLE:') || 
+          messageData.startsWith('Audio:') ||
+          messageData.startsWith('LoRa:') ||
+          messageData.startsWith('AUDIO_SEG:') ||  // Internal audio segment frames
+          messageData.startsWith('TX ') ||  // TX progress messages
+          messageData.startsWith('RX ') ||  // RX progress messages
+          messageData.contains('len=') ||
+          messageData.contains('RSSI=') ||
+          messageData.contains('SNR=') ||
+          messageData.contains('assembly') ||  // "Starting new audio assembly"
+          messageData.contains('Complete!') ||  // "Audio assembly Complete!"
+          messageData.contains('chunks') ||  // "segmenting into X chunks"
+          messageData.contains('seg ') ||  // Any segment-related message
+          messageData.length < 2 ||  // Filter out very short/empty messages
+          RegExp(r'^[^a-zA-Z0-9\s]+$').hasMatch(messageData)) {  // Only special characters
+        return; // Don't show as chat message
       }
       
       String? parsedUsername;
@@ -268,14 +301,6 @@ class _MessagingScreenState extends State<MessagingScreen> {
     }
   }
 
-  Future<void> _toggleRecord() async {
-    if (_isRecording) {
-      await _stopAndSendAudio();
-    } else {
-      await _startRecording();
-    }
-  }
-
   Future<void> _startRecording() async {
     if (await Permission.microphone.request().isDenied) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Microphone permission denied')));
@@ -294,15 +319,98 @@ class _MessagingScreenState extends State<MessagingScreen> {
       bitRate: 16000,  // Very low bitrate for maximum compression (voice quality)
       sampleRate: 16000,  // Lower sample rate (good enough for voice)
     );
-    setState(() { _isRecording = true; });
+    
     _recordStopwatch..reset()..start();
+    
+    // Start timer to update duration display every 100ms
+    _recordingTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
+      if (!_isRecording) {
+        timer.cancel();
+        return;
+      }
+      setState(() {
+        final elapsed = _recordStopwatch.elapsed;
+        final seconds = elapsed.inSeconds;
+        final tenths = (elapsed.inMilliseconds % 1000) ~/ 100;
+        _recordingDuration = '$seconds:${(elapsed.inSeconds % 60).toString().padLeft(2, '0')}.$tenths';
+      });
+    });
+    
+    setState(() { _isRecording = true; });
+  }
+
+  Future<void> _cancelRecording() async {
+    try {
+      _recordingTimer?.cancel();
+      _recordingTimer = null;
+      
+      await _recorder.stopRecorder();
+      _recordStopwatch.stop();
+      
+      // Haptic feedback
+      HapticFeedback.mediumImpact();
+      
+      setState(() { 
+        _isRecording = false;
+        _recordingDuration = '0:00.0';
+        _recordingSwipeOffset = 0.0;
+        _recordingCancelled = false;
+      });
+      
+      print('Audio: Recording cancelled');
+      
+      // Show cancellation message
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Recording cancelled'),
+          duration: Duration(milliseconds: 1000),
+          backgroundColor: Colors.grey,
+        ),
+      );
+    } catch (e) {
+      print('Audio: ERROR during cancel - $e');
+      setState(() { 
+        _isRecording = false;
+        _recordingDuration = '0:00.0';
+        _recordingSwipeOffset = 0.0;
+        _recordingCancelled = false;
+      });
+    }
   }
 
   Future<void> _stopAndSendAudio() async {
     try {
+      _recordingTimer?.cancel();
+      _recordingTimer = null;
+      
       final path = await _recorder.stopRecorder();
       _recordStopwatch.stop();
-      setState(() { _isRecording = false; });
+      
+      // Check minimum recording duration (at least 0.5 seconds)
+      final recordingDurationMs = _recordStopwatch.elapsedMilliseconds;
+      setState(() { 
+        _isRecording = false;
+        _recordingDuration = '0:00.0';
+        _recordingSwipeOffset = 0.0;
+        _recordingCancelled = false;
+      });
+      
+      if (_recordingCancelled) {
+        print('Audio: Recording was cancelled');
+        return;
+      }
+      
+      if (recordingDurationMs < 500) {
+        print('Audio: Recording too short (${recordingDurationMs}ms), discarding');
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Hold to record - recording too short'),
+            duration: Duration(milliseconds: 1500),
+          ),
+        );
+        return;
+      }
+      
       if (path == null) return;
       final file = File(path);
       if (!(await file.exists())) return;
@@ -330,11 +438,17 @@ class _MessagingScreenState extends State<MessagingScreen> {
       
       print('Audio: compressed base64 length=${b64.length}');
 
-      // Add to UI immediately - segments will be set when Arduino confirms
+      // Calculate estimated segments based on base64 length (200 chars per segment)
+      _estimatedTotalSegments = (b64.length / 200).ceil();
+      
+      // Add to UI immediately
       setState(() {
-        _messages.add(ChatMessage.audioSent(path, durationMs, username: username, totalSegments: null));
+        _messages.add(ChatMessage.audioSent(path, durationMs, username: username, totalSegments: _estimatedTotalSegments));
       });
       if (_autoScroll) _scrollToBottom();
+      
+      // Start proactive progress animation based on estimated segments
+      _startSegmentProgressAnimation(_estimatedTotalSegments);
 
       // Send as AUDIO_B64_GZIP (compressed)
       final payload = '$username:AUDIO_B64_GZIP:$durationMs:$b64\n';
@@ -364,36 +478,100 @@ class _MessagingScreenState extends State<MessagingScreen> {
     });
   }
   
-  // Initialize sending progress
+  // Start proactive progress animation based on estimated segments
+  void _startSegmentProgressAnimation(int totalSegments) {
+    _segmentProgressTimer?.cancel();
+    _currentAnimatedSegment = 0;
+    _progressAnimationController.value = 0.0;
+    
+    // Create a timer that increments progress conservatively
+    // Each segment: 600ms Arduino delay + 300ms BLE/LoRa overhead + 400ms safety = 1300ms
+    _segmentProgressTimer = Timer.periodic(const Duration(milliseconds: 1300), (timer) {
+      _currentAnimatedSegment++;
+      
+      // Stop at 95% to ensure we never reach 100% before transmission actually completes
+      final maxSegment = (totalSegments * 0.95).round();
+      if (_currentAnimatedSegment >= maxSegment) {
+        _currentAnimatedSegment = maxSegment;
+        timer.cancel();
+      }
+      
+      // Update progress bar
+      final progress = _currentAnimatedSegment / totalSegments;
+      _progressAnimationController.value = progress;
+      
+      // Force UI update
+      setState(() {});
+    });
+  }
+  
+  // Initialize sending progress (called when Arduino confirms actual segment count)
   void _initSendingProgress(int total) {
+    // If actual total differs from estimate, update it
+    if (total != _estimatedTotalSegments) {
+      _estimatedTotalSegments = total;
+      _segmentProgressTimer?.cancel();
+      _startSegmentProgressAnimation(total);
+    }
+    
+    // Update the segment total in the message
     setState(() {
-      // Find the last audio sent message and initialize its total segments
       for (int i = _messages.length - 1; i >= 0; i--) {
         if (_messages[i].type == MessageType.audioSent && !_messages[i].audioCompleted) {
-          _messages[i].audioSegmentsTotal = total;
-          _messages[i].audioSegmentsCurrent = 0;
-          print('App: Initialized sending progress with $total segments');
+          final oldMessage = _messages[i];
+          _messages[i] = ChatMessage(
+            content: oldMessage.content,
+            timestamp: oldMessage.timestamp,
+            type: oldMessage.type,
+            username: oldMessage.username,
+            audioFilePath: oldMessage.audioFilePath,
+            audioDurationMs: oldMessage.audioDurationMs,
+            audioSegmentsCurrent: 0,
+            audioSegmentsTotal: total,
+            audioCompleted: false,
+          );
           break;
         }
       }
     });
   }
   
-  // Update sending progress
+  // Update sending progress - actual segment confirmations
   void _updateSendingProgress(int current, int total) {
-    setState(() {
-      // Find the last audio sent message
-      for (int i = _messages.length - 1; i >= 0; i--) {
-        if (_messages[i].type == MessageType.audioSent && !_messages[i].audioCompleted) {
-          _messages[i].audioSegmentsCurrent = current;
-          _messages[i].audioSegmentsTotal = total;
-          if (current >= total) {
-            _messages[i].audioCompleted = true;
+    // Sync animated segment with actual progress (in case they drift)
+    if (current > _currentAnimatedSegment) {
+      _currentAnimatedSegment = current;
+      _progressAnimationController.value = current / total;
+    }
+    
+    // If this is the last segment, stop timer and mark as complete
+    if (current >= total) {
+      _segmentProgressTimer?.cancel();
+      _progressAnimationController.value = 1.0;
+      
+      Future.delayed(const Duration(milliseconds: 500), () {
+        setState(() {
+          for (int j = _messages.length - 1; j >= 0; j--) {
+            if (_messages[j].type == MessageType.audioSent && 
+                !_messages[j].audioCompleted) {
+              final msg = _messages[j];
+              _messages[j] = ChatMessage(
+                content: msg.content,
+                timestamp: msg.timestamp,
+                type: msg.type,
+                username: msg.username,
+                audioFilePath: msg.audioFilePath,
+                audioDurationMs: msg.audioDurationMs,
+                audioSegmentsCurrent: total,
+                audioSegmentsTotal: total,
+                audioCompleted: true,
+              );
+              break;
+            }
           }
-          break;
-        }
-      }
-    });
+        });
+      });
+    }
   }
   
   // Update receiving progress
@@ -402,8 +580,19 @@ class _MessagingScreenState extends State<MessagingScreen> {
       // Find the audio receiving message
       for (int i = _messages.length - 1; i >= 0; i--) {
         if (_messages[i].type == MessageType.audioReceiving) {
-          _messages[i].audioSegmentsCurrent = current;
-          _messages[i].audioSegmentsTotal = total;
+          // Create a new message object with updated progress values
+          final oldMessage = _messages[i];
+          _messages[i] = ChatMessage(
+            content: oldMessage.content,
+            timestamp: oldMessage.timestamp,
+            type: oldMessage.type,
+            username: oldMessage.username,
+            audioFilePath: oldMessage.audioFilePath,
+            audioDurationMs: oldMessage.audioDurationMs,
+            audioSegmentsCurrent: current,
+            audioSegmentsTotal: total,
+            audioCompleted: oldMessage.audioCompleted,
+          );
           break;
         }
       }
@@ -607,11 +796,18 @@ class _MessagingScreenState extends State<MessagingScreen> {
                       itemCount: _filteredMessages.length,
                       itemBuilder: (context, index) {
                         final message = _filteredMessages[index];
-                        final isReceived = message.type == MessageType.received;
+                        final isReceived = message.type == MessageType.received || 
+                                          message.type == MessageType.audioReceived || 
+                                          message.type == MessageType.audioReceiving;
                         final showAvatar = _shouldShowAvatar(index);
                         
                         return Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                          padding: EdgeInsets.only(
+                            left: 8,
+                            right: isReceived ? 8 : 4,  // Small right padding for sent messages
+                            top: 2,
+                            bottom: 2,
+                          ),
                           child: Row(
                             mainAxisAlignment: isReceived 
                                 ? MainAxisAlignment.start 
@@ -642,8 +838,9 @@ class _MessagingScreenState extends State<MessagingScreen> {
                                 const SizedBox(width: 38),
                               ],
                               
-                              Flexible(
-                                child: Container(
+                              if (isReceived)
+                                Flexible(
+                                  child: Container(
                                   padding: const EdgeInsets.symmetric(
                                     horizontal: 10,
                                     vertical: 6,
@@ -681,58 +878,121 @@ class _MessagingScreenState extends State<MessagingScreen> {
                                               mainAxisSize: MainAxisSize.min,
                                               children: [
                                                 if (message.type != MessageType.audioReceiving)
-                                                  IconButton(
-                                                    icon: const Icon(Icons.play_arrow),
-                                                    onPressed: () async {
-                                                      if (message.audioFilePath != null) {
-                                                        try {
-                                                          await _audioPlayer.setFilePath(message.audioFilePath!);
-                                                          await _audioPlayer.play();
-                                                        } catch (_) {}
-                                                      }
-                                                    },
+                                                  Container(
+                                                    decoration: BoxDecoration(
+                                                      color: message.type == MessageType.audioSent 
+                                                        ? const Color(0xFF005C4B).withOpacity(0.15)
+                                                        : const Color(0xFF0088CC).withOpacity(0.15),
+                                                      shape: BoxShape.circle,
+                                                    ),
+                                                    child: IconButton(
+                                                      icon: Icon(
+                                                        message.type == MessageType.audioSent 
+                                                          ? Icons.mic 
+                                                          : Icons.play_arrow,
+                                                        color: message.type == MessageType.audioSent 
+                                                          ? const Color(0xFF005C4B)
+                                                          : const Color(0xFF0088CC),
+                                                      ),
+                                                      onPressed: () async {
+                                                        if (message.audioFilePath != null) {
+                                                          try {
+                                                            await _audioPlayer.setFilePath(message.audioFilePath!);
+                                                            await _audioPlayer.play();
+                                                          } catch (_) {}
+                                                        }
+                                                      },
+                                                    ),
                                                   )
                                                 else
                                                   const Padding(
                                                     padding: EdgeInsets.all(12.0),
                                                     child: Icon(Icons.downloading, color: Colors.grey),
                                                   ),
+                                                const SizedBox(width: 4),
                                                 Flexible(
-                                                  child: Text(
-                                                    message.content,
-                                                    overflow: TextOverflow.ellipsis,
+                                                  child: Column(
+                                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                                    children: [
+                                                      Text(
+                                                        message.type == MessageType.audioSent 
+                                                          ? 'Voice Message'
+                                                          : 'Audio',
+                                                        style: TextStyle(
+                                                          fontSize: 13,
+                                                          fontWeight: FontWeight.bold,
+                                                          color: message.type == MessageType.audioSent 
+                                                            ? const Color(0xFF005C4B)
+                                                            : const Color(0xFF0088CC),
+                                                        ),
+                                                      ),
+                                                      Text(
+                                                        message.content,
+                                                        style: TextStyle(
+                                                          fontSize: 12,
+                                                          color: Colors.grey[700],
+                                                        ),
+                                                        overflow: TextOverflow.ellipsis,
+                                                      ),
+                                                    ],
                                                   ),
                                                 ),
                                               ],
                                             ),
-                                            // Progress bar for audio
-                                            if (!message.audioCompleted && message.audioProgress != null) ...[
-                                              const SizedBox(height: 4),
-                                              Container(
-                                                constraints: const BoxConstraints(maxWidth: 200),
-                                                child: Column(
-                                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                                  children: [
+                                            // Progress bar for audio - always visible for audioSent messages
+                                            const SizedBox(height: 4),
+                                            Container(
+                                              constraints: const BoxConstraints(maxWidth: 200),
+                                              child: Column(
+                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                children: [
+                                                  if (!message.audioCompleted) ...[
+                                                    // Show progress bar
                                                     LinearProgressIndicator(
-                                                      value: message.audioProgress,
+                                                      value: message.type == MessageType.audioSent 
+                                                        ? _progressAnimationController.value  // Use animation value for sending
+                                                        : message.audioProgress,  // Use actual progress for receiving
                                                       backgroundColor: Colors.grey[300],
                                                       valueColor: AlwaysStoppedAnimation<Color>(
-                                                        message.type == MessageType.audioSent ? whatsappGreen : whatsappDarkGreen,
+                                                        message.type == MessageType.audioSent 
+                                                          ? const Color(0xFF005C4B)  // Green for sent
+                                                          : const Color(0xFF0088CC),  // Blue for received
                                                       ),
                                                     ),
                                                     const SizedBox(height: 2),
                                                     Text(
-                                                      '${(message.audioProgress! * 100).toInt()}%',
+                                                      message.type == MessageType.audioSent
+                                                        ? '${(_progressAnimationController.value * 100).toInt()}%'  // Use animation value
+                                                        : (message.audioProgress != null
+                                                            ? '${(message.audioProgress! * 100).toInt()}%'
+                                                            : 'Receiving...'),
                                                       style: TextStyle(
                                                         fontSize: 10,
                                                         color: Colors.grey[600],
                                                         fontWeight: FontWeight.w500,
                                                       ),
                                                     ),
+                                                  ] else ...[
+                                                    // Completed: show success indicator only for sent messages
+                                                    if (message.type == MessageType.audioSent)
+                                                      Row(
+                                                        children: const [
+                                                          Icon(Icons.check_circle, size: 14, color: whatsappGreen),
+                                                          SizedBox(width: 4),
+                                                          Text(
+                                                            'Sent',
+                                                            style: TextStyle(
+                                                              fontSize: 10,
+                                                              color: whatsappGreen,
+                                                              fontWeight: FontWeight.bold,
+                                                            ),
+                                                          ),
+                                                        ],
+                                                      ),
                                                   ],
-                                                ),
+                                                ],
                                               ),
-                                            ],
+                                            ),
                                           ],
                                         ),
                                       ] else ...[
@@ -768,16 +1028,288 @@ class _MessagingScreenState extends State<MessagingScreen> {
                                     ],
                                   ),
                                 ),
-                              ),
-                              
-                              if (!isReceived) 
-                                const SizedBox(width: 38),
+                              )
+                              else
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 6,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: sentBubbleColor,
+                                    borderRadius: const BorderRadius.only(
+                                      topLeft: Radius.circular(8),
+                                      topRight: Radius.circular(8),
+                                      bottomLeft: Radius.circular(8),
+                                      bottomRight: Radius.circular(2),
+                                    ),
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.end,
+                                    children: [
+                                      if (message.type == MessageType.audioSent || message.type == MessageType.audioReceived || message.type == MessageType.audioReceiving) ...[
+                                        Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                if (message.type != MessageType.audioReceiving)
+                                                  Container(
+                                                    decoration: BoxDecoration(
+                                                      color: message.type == MessageType.audioSent 
+                                                        ? const Color(0xFF005C4B).withOpacity(0.15)
+                                                        : const Color(0xFF0088CC).withOpacity(0.15),
+                                                      shape: BoxShape.circle,
+                                                    ),
+                                                    child: IconButton(
+                                                      icon: Icon(
+                                                        message.type == MessageType.audioSent 
+                                                          ? Icons.mic 
+                                                          : Icons.play_arrow,
+                                                        color: message.type == MessageType.audioSent 
+                                                          ? const Color(0xFF005C4B)
+                                                          : const Color(0xFF0088CC),
+                                                      ),
+                                                      onPressed: () async {
+                                                        if (message.audioFilePath != null) {
+                                                          try {
+                                                            await _audioPlayer.setFilePath(message.audioFilePath!);
+                                                            await _audioPlayer.play();
+                                                          } catch (_) {}
+                                                        }
+                                                      },
+                                                    ),
+                                                  )
+                                                else
+                                                  const Padding(
+                                                    padding: EdgeInsets.all(12.0),
+                                                    child: Icon(Icons.downloading, color: Colors.grey),
+                                                  ),
+                                                const SizedBox(width: 4),
+                                                Flexible(
+                                                  child: Column(
+                                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                                    children: [
+                                                      Text(
+                                                        message.type == MessageType.audioSent 
+                                                          ? 'Voice Message'
+                                                          : 'Audio',
+                                                        style: TextStyle(
+                                                          fontSize: 13,
+                                                          fontWeight: FontWeight.bold,
+                                                          color: message.type == MessageType.audioSent 
+                                                            ? const Color(0xFF005C4B)
+                                                            : const Color(0xFF0088CC),
+                                                        ),
+                                                      ),
+                                                      Text(
+                                                        message.content,
+                                                        style: TextStyle(
+                                                          fontSize: 12,
+                                                          color: Colors.grey[700],
+                                                        ),
+                                                        overflow: TextOverflow.ellipsis,
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                            // Progress bar for audio - always visible for audioSent messages
+                                            const SizedBox(height: 4),
+                                            Container(
+                                              constraints: const BoxConstraints(maxWidth: 200),
+                                              child: Column(
+                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                children: [
+                                                  if (!message.audioCompleted) ...[
+                                                    // Show progress bar
+                                                    LinearProgressIndicator(
+                                                      value: message.type == MessageType.audioSent 
+                                                        ? _progressAnimationController.value  // Use animation value for sending
+                                                        : message.audioProgress,  // Use actual progress for receiving
+                                                      backgroundColor: Colors.grey[300],
+                                                      valueColor: AlwaysStoppedAnimation<Color>(
+                                                        message.type == MessageType.audioSent 
+                                                          ? const Color(0xFF005C4B)  // Green for sent
+                                                          : const Color(0xFF0088CC),  // Blue for received
+                                                      ),
+                                                    ),
+                                                    const SizedBox(height: 2),
+                                                    Text(
+                                                      message.type == MessageType.audioSent
+                                                        ? '${(_progressAnimationController.value * 100).toInt()}%'  // Use animation value
+                                                        : (message.audioProgress != null
+                                                            ? '${(message.audioProgress! * 100).toInt()}%'
+                                                            : 'Receiving...'),
+                                                      style: TextStyle(
+                                                        fontSize: 10,
+                                                        color: Colors.grey[600],
+                                                        fontWeight: FontWeight.w500,
+                                                      ),
+                                                    ),
+                                                  ] else ...[
+                                                    // Completed: show success indicator only for sent messages
+                                                    if (message.type == MessageType.audioSent)
+                                                      Row(
+                                                        children: const [
+                                                          Icon(Icons.check_circle, size: 14, color: whatsappGreen),
+                                                          SizedBox(width: 4),
+                                                          Text(
+                                                            'Sent',
+                                                            style: TextStyle(
+                                                              fontSize: 10,
+                                                              color: whatsappGreen,
+                                                              fontWeight: FontWeight.bold,
+                                                            ),
+                                                          ),
+                                                        ],
+                                                      ),
+                                                  ],
+                                                ],
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ] else ...[
+                                        Text(
+                                          message.content,
+                                          style: const TextStyle(
+                                            fontSize: 15,
+                                            color: Color(0xFF111B21),
+                                          ),
+                                        ),
+                                      ],
+                                      const SizedBox(height: 2),
+                                      Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Text(
+                                            message.formattedTime,
+                                            style: TextStyle(
+                                              fontSize: 11,
+                                              color: Colors.grey[600],
+                                            ),
+                                          ),
+                                          if (!isReceived) ...[
+                                            const SizedBox(width: 4),
+                                            Icon(
+                                              Icons.done_all,
+                                              size: 14,
+                                              color: Colors.grey[600],
+                                            ),
+                                          ],
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
                             ],
                           ),
                         );
                       },
                     ),
           ),
+          
+          // Recording overlay with timer and swipe-to-cancel
+          if (_isRecording)
+            Stack(
+              children: [
+                Container(
+                  color: whatsappLightGray,
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  child: Transform.translate(
+                    offset: Offset(_recordingSwipeOffset, 0),
+                    child: Row(
+                      children: [
+                        // Pulsing red dot
+                        TweenAnimationBuilder<double>(
+                          tween: Tween(begin: 0.5, end: 1.0),
+                          duration: const Duration(milliseconds: 800),
+                          builder: (context, value, child) {
+                            return Opacity(
+                              opacity: value * (1 - (_recordingSwipeOffset.abs() / 120)),
+                              child: Container(
+                                width: 12,
+                                height: 12,
+                                decoration: const BoxDecoration(
+                                  color: Colors.red,
+                                  shape: BoxShape.circle,
+                                ),
+                              ),
+                            );
+                          },
+                          onEnd: () {
+                            // Restart animation by rebuilding
+                            if (_isRecording) {
+                              setState(() {});
+                            }
+                          },
+                        ),
+                        const SizedBox(width: 12),
+                        Text(
+                          _recordingDuration,
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.black87.withOpacity(1 - (_recordingSwipeOffset.abs() / 120)),
+                          ),
+                        ),
+                        const Spacer(),
+                        Opacity(
+                          opacity: 1 - (_recordingSwipeOffset.abs() / 120),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.keyboard_arrow_left,
+                                color: Colors.grey,
+                                size: 16,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                _recordStopwatch.elapsed.inMilliseconds < 500 
+                                    ? 'Keep holding...' 
+                                    : 'Swipe to cancel',
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey,
+                                  fontStyle: FontStyle.italic,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                // Cancel zone indicator (appears when swiping)
+                if (_recordingSwipeOffset < -20)
+                  Positioned(
+                    left: 0,
+                    top: 0,
+                    bottom: 0,
+                    child: Container(
+                      width: 60,
+                      decoration: BoxDecoration(
+                        color: Colors.red.withOpacity(0.1 + (_recordingSwipeOffset.abs() / 120) * 0.3),
+                        border: Border(
+                          right: BorderSide(
+                            color: Colors.red.withOpacity(_recordingSwipeOffset.abs() / 120),
+                            width: 2,
+                          ),
+                        ),
+                      ),
+                      child: Icon(
+                        Icons.delete_outline,
+                        color: Colors.red.withOpacity(0.5 + (_recordingSwipeOffset.abs() / 120) * 0.5),
+                        size: 24,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
           
           // Input Field
           Container(
@@ -786,16 +1318,63 @@ class _MessagingScreenState extends State<MessagingScreen> {
             child: SafeArea(
               child: Row(
                 children: [
-                  // Record button
-                  Container(
-                    decoration: BoxDecoration(
-                      color: _isRecording ? Colors.red : Colors.grey.shade200,
-                      shape: BoxShape.circle,
-                    ),
-                    child: IconButton(
-                      icon: Icon(_isRecording ? Icons.stop : Icons.mic, color: _isRecording ? Colors.white : Colors.black87),
-                      onPressed: _isConnected ? _toggleRecord : null,
-                      tooltip: _isRecording ? 'Stop' : 'Record',
+                  // Record button - Hold to record, swipe left to cancel
+                  Listener(
+                    onPointerDown: _isConnected ? (event) {
+                      _recordingStartX = event.position.dx;
+                      _recordingSwipeOffset = 0.0;
+                      _recordingCancelled = false;
+                      _startRecording();
+                    } : null,
+                    onPointerMove: _isConnected ? (event) {
+                      if (_isRecording) {
+                        setState(() {
+                          // Calculate swipe offset (negative = left, positive = right)
+                          double offset = event.position.dx - _recordingStartX;
+                          // Only allow left swipe, clamp the values
+                          _recordingSwipeOffset = offset.clamp(-120.0, 0.0);
+                          
+                          // If swiped far enough left, mark as cancelled
+                          if (_recordingSwipeOffset <= -100) {
+                            _recordingCancelled = true;
+                          }
+                        });
+                      }
+                    } : null,
+                    onPointerUp: _isConnected ? (_) {
+                      if (_isRecording) {
+                        if (_recordingCancelled || _recordingSwipeOffset <= -100) {
+                          // Cancelled by swipe
+                          _cancelRecording();
+                        } else {
+                          // Normal send
+                          _stopAndSendAudio();
+                        }
+                      }
+                    } : null,
+                    child: Container(
+                      width: 48,
+                      height: 48,
+                      decoration: BoxDecoration(
+                        color: _isRecording 
+                            ? (_recordingCancelled 
+                                ? Colors.grey 
+                                : (_recordStopwatch.elapsed.inMilliseconds < 500 ? Colors.orange : Colors.red))
+                            : Colors.grey.shade200,
+                        shape: BoxShape.circle,
+                        boxShadow: _isRecording && !_recordingCancelled ? [
+                          BoxShadow(
+                            color: Colors.red.withOpacity(0.3),
+                            blurRadius: 8,
+                            spreadRadius: 2,
+                          ),
+                        ] : null,
+                      ),
+                      child: Icon(
+                        _isRecording ? Icons.mic : Icons.mic_none,
+                        color: _isRecording ? Colors.white : Colors.black87,
+                        size: 24,
+                      ),
                     ),
                   ),
                   const SizedBox(width: 8),
@@ -852,6 +1431,9 @@ class _MessagingScreenState extends State<MessagingScreen> {
 
   @override
   void dispose() {
+    _recordingTimer?.cancel();
+    _segmentProgressTimer?.cancel();
+    _progressAnimationController.dispose();
     _messageController.dispose();
     _scrollController.dispose();
     _focusNode.dispose();
